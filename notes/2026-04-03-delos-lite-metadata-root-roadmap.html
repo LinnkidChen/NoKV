@@ -1,0 +1,812 @@
+<!DOCTYPE HTML>
+<html lang="en" class="light sidebar-visible" dir="ltr">
+    <head>
+        <!-- Book generated using mdBook -->
+        <meta charset="UTF-8">
+        <title>2026-04-03 Rooted Metadata、Delos-lite 与 VirtualLog - NoKV Docs</title>
+
+
+        <!-- Custom HTML head -->
+
+        <meta name="description" content="NoKV design, architecture, migration, and testing documentation.">
+        <meta name="viewport" content="width=device-width, initial-scale=1">
+        <meta name="theme-color" content="#ffffff">
+
+        <link rel="icon" href="../favicon-de23e50b.svg">
+        <link rel="shortcut icon" href="../favicon-8114d1fc.png">
+        <link rel="stylesheet" href="../css/variables-8adf115d.css">
+        <link rel="stylesheet" href="../css/general-2459343d.css">
+        <link rel="stylesheet" href="../css/chrome-ae938929.css">
+        <link rel="stylesheet" href="../css/print-9e4910d8.css" media="print">
+
+        <!-- Fonts -->
+        <link rel="stylesheet" href="../fonts/fonts-9644e21d.css">
+
+        <!-- Highlight.js Stylesheets -->
+        <link rel="stylesheet" id="mdbook-highlight-css" href="../highlight-493f70e1.css">
+        <link rel="stylesheet" id="mdbook-tomorrow-night-css" href="../tomorrow-night-4c0ae647.css">
+        <link rel="stylesheet" id="mdbook-ayu-highlight-css" href="../ayu-highlight-3fdfc3ac.css">
+
+        <!-- Custom theme stylesheets -->
+        <link rel="stylesheet" href="../docs/custom-a69f6233.css">
+
+
+        <!-- Provide site root and default themes to javascript -->
+        <script>
+            const path_to_root = "../";
+            const default_light_theme = "light";
+            const default_dark_theme = "navy";
+            window.path_to_searchindex_js = "../searchindex-587b1194.js";
+        </script>
+        <!-- Start loading toc.js asap -->
+        <script src="../toc-2018305d.js"></script>
+    </head>
+    <body>
+    <div id="mdbook-help-container">
+        <div id="mdbook-help-popup">
+            <h2 class="mdbook-help-title">Keyboard shortcuts</h2>
+            <div>
+                <p>Press <kbd>←</kbd> or <kbd>→</kbd> to navigate between chapters</p>
+                <p>Press <kbd>S</kbd> or <kbd>/</kbd> to search in the book</p>
+                <p>Press <kbd>?</kbd> to show this help</p>
+                <p>Press <kbd>Esc</kbd> to hide this help</p>
+            </div>
+        </div>
+    </div>
+    <div id="mdbook-body-container">
+        <!-- Work around some values being stored in localStorage wrapped in quotes -->
+        <script>
+            try {
+                let theme = localStorage.getItem('mdbook-theme');
+                let sidebar = localStorage.getItem('mdbook-sidebar');
+
+                if (theme.startsWith('"') && theme.endsWith('"')) {
+                    localStorage.setItem('mdbook-theme', theme.slice(1, theme.length - 1));
+                }
+
+                if (sidebar.startsWith('"') && sidebar.endsWith('"')) {
+                    localStorage.setItem('mdbook-sidebar', sidebar.slice(1, sidebar.length - 1));
+                }
+            } catch (e) { }
+        </script>
+
+        <!-- Set the theme before any content is loaded, prevents flash -->
+        <script>
+            const default_theme = window.matchMedia("(prefers-color-scheme: dark)").matches ? default_dark_theme : default_light_theme;
+            let theme;
+            try { theme = localStorage.getItem('mdbook-theme'); } catch(e) { }
+            if (theme === null || theme === undefined) { theme = default_theme; }
+            const html = document.documentElement;
+            html.classList.remove('light')
+            html.classList.add(theme);
+            html.classList.add("js");
+        </script>
+
+        <input type="checkbox" id="mdbook-sidebar-toggle-anchor" class="hidden">
+
+        <!-- Hide / unhide sidebar before it is displayed -->
+        <script>
+            let sidebar = null;
+            const sidebar_toggle = document.getElementById("mdbook-sidebar-toggle-anchor");
+            if (document.body.clientWidth >= 1080) {
+                try { sidebar = localStorage.getItem('mdbook-sidebar'); } catch(e) { }
+                sidebar = sidebar || 'visible';
+            } else {
+                sidebar = 'hidden';
+                sidebar_toggle.checked = false;
+            }
+            if (sidebar === 'visible') {
+                sidebar_toggle.checked = true;
+            } else {
+                html.classList.remove('sidebar-visible');
+            }
+        </script>
+
+        <nav id="mdbook-sidebar" class="sidebar" aria-label="Table of contents">
+            <!-- populated by js -->
+            <mdbook-sidebar-scrollbox class="sidebar-scrollbox"></mdbook-sidebar-scrollbox>
+            <noscript>
+                <iframe class="sidebar-iframe-outer" src="../toc.html"></iframe>
+            </noscript>
+            <div id="mdbook-sidebar-resize-handle" class="sidebar-resize-handle">
+                <div class="sidebar-resize-indicator"></div>
+            </div>
+        </nav>
+
+        <div id="mdbook-page-wrapper" class="page-wrapper">
+
+            <div class="page">
+                <div id="mdbook-menu-bar-hover-placeholder"></div>
+                <div id="mdbook-menu-bar" class="menu-bar sticky">
+                    <div class="left-buttons">
+                        <label id="mdbook-sidebar-toggle" class="icon-button" for="mdbook-sidebar-toggle-anchor" title="Toggle Table of Contents" aria-label="Toggle Table of Contents" aria-controls="mdbook-sidebar">
+                            <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M0 96C0 78.3 14.3 64 32 64H416c17.7 0 32 14.3 32 32s-14.3 32-32 32H32C14.3 128 0 113.7 0 96zM0 256c0-17.7 14.3-32 32-32H416c17.7 0 32 14.3 32 32s-14.3 32-32 32H32c-17.7 0-32-14.3-32-32zM448 416c0 17.7-14.3 32-32 32H32c-17.7 0-32-14.3-32-32s14.3-32 32-32H416c17.7 0 32 14.3 32 32z"/></svg></span>
+                        </label>
+                        <button id="mdbook-theme-toggle" class="icon-button" type="button" title="Change theme" aria-label="Change theme" aria-haspopup="true" aria-expanded="false" aria-controls="mdbook-theme-list">
+                            <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 576 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M371.3 367.1c27.3-3.9 51.9-19.4 67.2-42.9L600.2 74.1c12.6-19.5 9.4-45.3-7.6-61.2S549.7-4.4 531.1 9.6L294.4 187.2c-24 18-38.2 46.1-38.4 76.1L371.3 367.1zm-19.6 25.4l-116-104.4C175.9 290.3 128 339.6 128 400c0 3.9 .2 7.8 .6 11.6c1.8 17.5-10.2 36.4-27.8 36.4H96c-17.7 0-32 14.3-32 32s14.3 32 32 32H240c61.9 0 112-50.1 112-112c0-2.5-.1-5-.2-7.5z"/></svg></span>
+                        </button>
+                        <ul id="mdbook-theme-list" class="theme-popup" aria-label="Themes" role="menu">
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-default_theme">Auto</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-light">Light</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-rust">Rust</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-coal">Coal</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-navy">Navy</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-ayu">Ayu</button></li>
+                        </ul>
+                        <button id="mdbook-search-toggle" class="icon-button" type="button" title="Search (`/`)" aria-label="Toggle Searchbar" aria-expanded="false" aria-keyshortcuts="/ s" aria-controls="mdbook-searchbar">
+                            <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M416 208c0 45.9-14.9 88.3-40 122.7L502.6 457.4c12.5 12.5 12.5 32.8 0 45.3s-32.8 12.5-45.3 0L330.7 376c-34.4 25.2-76.8 40-122.7 40C93.1 416 0 322.9 0 208S93.1 0 208 0S416 93.1 416 208zM208 352c79.5 0 144-64.5 144-144s-64.5-144-144-144S64 128.5 64 208s64.5 144 144 144z"/></svg></span>
+                        </button>
+                    </div>
+
+                    <h1 class="menu-title">NoKV Docs</h1>
+
+                    <div class="right-buttons">
+                        <a href="../print.html" title="Print this book" aria-label="Print this book">
+                            <span class=fa-svg id="print-button"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M128 0C92.7 0 64 28.7 64 64v96h64V64H354.7L384 93.3V160h64V93.3c0-17-6.7-33.3-18.7-45.3L400 18.7C388 6.7 371.7 0 354.7 0H128zM384 352v32 64H128V384 368 352H384zm64 32h32c17.7 0 32-14.3 32-32V256c0-35.3-28.7-64-64-64H64c-35.3 0-64 28.7-64 64v96c0 17.7 14.3 32 32 32H64v64c0 35.3 28.7 64 64 64H384c35.3 0 64-28.7 64-64V384zm-16-88c-13.3 0-24-10.7-24-24s10.7-24 24-24s24 10.7 24 24s-10.7 24-24 24z"/></svg></span>
+                        </a>
+                        <a href="https://github.com/feichai0017/NoKV" title="Git repository" aria-label="Git repository">
+                            <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 496 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M165.9 397.4c0 2-2.3 3.6-5.2 3.6-3.3.3-5.6-1.3-5.6-3.6 0-2 2.3-3.6 5.2-3.6 3-.3 5.6 1.3 5.6 3.6zm-31.1-4.5c-.7 2 1.3 4.3 4.3 4.9 2.6 1 5.6 0 6.2-2s-1.3-4.3-4.3-5.2c-2.6-.7-5.5.3-6.2 2.3zm44.2-1.7c-2.9.7-4.9 2.6-4.6 4.9.3 2 2.9 3.3 5.9 2.6 2.9-.7 4.9-2.6 4.6-4.6-.3-1.9-3-3.2-5.9-2.9zM244.8 8C106.1 8 0 113.3 0 252c0 110.9 69.8 205.8 169.5 239.2 12.8 2.3 17.3-5.6 17.3-12.1 0-6.2-.3-40.4-.3-61.4 0 0-70 15-84.7-29.8 0 0-11.4-29.1-27.8-36.6 0 0-22.9-15.7 1.6-15.4 0 0 24.9 2 38.6 25.8 21.9 38.6 58.6 27.5 72.9 20.9 2.3-16 8.8-27.1 16-33.7-55.9-6.2-112.3-14.3-112.3-110.5 0-27.5 7.6-41.3 23.6-58.9-2.6-6.5-11.1-33.3 2.6-67.9 20.9-6.5 69 27 69 27 20-5.6 41.5-8.5 62.8-8.5s42.8 2.9 62.8 8.5c0 0 48.1-33.6 69-27 13.7 34.7 5.2 61.4 2.6 67.9 16 17.7 25.8 31.5 25.8 58.9 0 96.5-58.9 104.2-114.8 110.5 9.2 7.9 17 22.9 17 46.4 0 33.7-.3 75.4-.3 83.6 0 6.5 4.6 14.4 17.3 12.1C428.2 457.8 496 362.9 496 252 496 113.3 383.5 8 244.8 8zM97.2 352.9c-1.3 1-1 3.3.7 5.2 1.6 1.6 3.9 2.3 5.2 1 1.3-1 1-3.3-.7-5.2-1.6-1.6-3.9-2.3-5.2-1zm-10.8-8.1c-.7 1.3.3 2.9 2.3 3.9 1.6 1 3.6.7 4.3-.7.7-1.3-.3-2.9-2.3-3.9-2-.6-3.6-.3-4.3.7zm32.4 35.6c-1.6 1.3-1 4.3 1.3 6.2 2.3 2.3 5.2 2.6 6.5 1 1.3-1.3.7-4.3-1.3-6.2-2.2-2.3-5.2-2.6-6.5-1zm-11.4-14.7c-1.6 1-1.6 3.6 0 5.9 1.6 2.3 4.3 3.3 5.6 2.3 1.6-1.3 1.6-3.9 0-6.2-1.4-2.3-4-3.3-5.6-2z"/></svg></span>
+                        </a>
+
+                    </div>
+                </div>
+
+                <div id="mdbook-search-wrapper" class="hidden">
+                    <form id="mdbook-searchbar-outer" class="searchbar-outer">
+                        <div class="search-wrapper">
+                            <input type="search" id="mdbook-searchbar" name="searchbar" placeholder="Search this book ..." aria-controls="mdbook-searchresults-outer" aria-describedby="searchresults-header">
+                            <div class="spinner-wrapper">
+                                <span class=fa-svg id="fa-spin"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M304 48c0-26.5-21.5-48-48-48s-48 21.5-48 48s21.5 48 48 48s48-21.5 48-48zm0 416c0-26.5-21.5-48-48-48s-48 21.5-48 48s21.5 48 48 48s48-21.5 48-48zM48 304c26.5 0 48-21.5 48-48s-21.5-48-48-48s-48 21.5-48 48s21.5 48 48 48zm464-48c0-26.5-21.5-48-48-48s-48 21.5-48 48s21.5 48 48 48s48-21.5 48-48zM142.9 437c18.7-18.7 18.7-49.1 0-67.9s-49.1-18.7-67.9 0s-18.7 49.1 0 67.9s49.1 18.7 67.9 0zm0-294.2c18.7-18.7 18.7-49.1 0-67.9S93.7 56.2 75 75s-18.7 49.1 0 67.9s49.1 18.7 67.9 0zM369.1 437c18.7 18.7 49.1 18.7 67.9 0s18.7-49.1 0-67.9s-49.1-18.7-67.9 0s-18.7 49.1 0 67.9z"/></svg></span>
+                            </div>
+                        </div>
+                    </form>
+                    <div id="mdbook-searchresults-outer" class="searchresults-outer hidden">
+                        <div id="mdbook-searchresults-header" class="searchresults-header"></div>
+                        <ul id="mdbook-searchresults">
+                        </ul>
+                    </div>
+                </div>
+
+                <!-- Apply ARIA attributes after the sidebar and the sidebar toggle button are added to the DOM -->
+                <script>
+                    document.getElementById('mdbook-sidebar-toggle').setAttribute('aria-expanded', sidebar === 'visible');
+                    document.getElementById('mdbook-sidebar').setAttribute('aria-hidden', sidebar !== 'visible');
+                    Array.from(document.querySelectorAll('#mdbook-sidebar a')).forEach(function(link) {
+                        link.setAttribute('tabIndex', sidebar === 'visible' ? 0 : -1);
+                    });
+                </script>
+
+                <div id="mdbook-content" class="content">
+                    <main>
+                        <h1 id="2026-04-03-rooted-metadatadelos-lite-与-virtuallog-设计说明"><a class="header" href="#2026-04-03-rooted-metadatadelos-lite-与-virtuallog-设计说明">2026-04-03 Rooted Metadata、Delos-lite 与 VirtualLog 设计说明</a></h1>
+<blockquote>
+<p>状态：当前 NoKV metadata/control-plane 主线的正式设计说明。本文档用中文完整解释 <code>meta/root</code>、<code>coordinator</code>、<code>raftstore</code> 三层的职责、调用链、持久化布局、VirtualLog，以及它与 Delos / etcd 风格元数据服务的关系。</p>
+</blockquote>
+<h2 id="导读"><a class="header" href="#导读">导读</a></h2>
+<ul>
+<li>🧭 主题：NoKV 当前 <code>meta/root + coordinator + raftstore</code> 控制面为什么是一条 Delos-lite 主线。</li>
+<li>🧱 核心对象：<code>RootEvent</code>、<code>ObservedCommitted</code>、<code>TailAdvance</code>、<code>TailSubscription</code>、<code>TransitionAssessment</code>。</li>
+<li>🔁 调用链：<code>planned truth -&gt; execute -&gt; terminal truth</code> 与 <code>watch-first catch-up</code>。</li>
+<li>📚 参考对象：Delos、FoundationDB、TiKV/PD+etcd、CockroachDB。</li>
+</ul>
+<h2 id="1-为什么需要这篇文档"><a class="header" href="#1-为什么需要这篇文档">1. 为什么需要这篇文档</a></h2>
+<p>NoKV 在最近几轮里，已经把 metadata/control-plane 主线收成了一个比较清楚的工程化设计：</p>
+<ul>
+<li><code>meta/root</code> 成为最小 truth kernel</li>
+<li><code>coordinator</code> 不再是 authority，而是 rooted view + service + proposal gate</li>
+<li><code>raftstore</code> 越来越接近 target-driven executor</li>
+<li><code>local</code> 和 <code>replicated</code> backend 共享同一个 rooted domain</li>
+</ul>
+<p>如果不把这条主线正式写清楚，后面很容易再次回到这些坏形态：</p>
+<ol>
+<li><code>coordinator</code> 重新长成“大脑兼数据库”</li>
+<li>运行时观测和 durable truth 混在一起</li>
+<li><code>raftstore</code> 重新承担过多 control-plane 职责</li>
+<li>replicated backend 的协议细节反向污染上层领域模型</li>
+</ol>
+<p>所以这篇文档的目的不是描述一个理想图，而是明确：</p>
+<ul>
+<li>当前已经做成了什么</li>
+<li>为什么要这样分层</li>
+<li>这和 Delos / etcd 风格设计的区别是什么</li>
+<li>哪些地方已经稳定，哪些地方仍然属于研究空间</li>
+</ul>
+<h2 id="2-当前结论"><a class="header" href="#2-当前结论">2. 当前结论</a></h2>
+<p>NoKV 当前的 metadata/control-plane 可以理解成三层：</p>
+<ol>
+<li><code>meta/root</code>
+<ul>
+<li>最小 durable truth</li>
+<li>transition state machine</li>
+<li>rooted <code>VirtualLog</code> contract</li>
+</ul>
+</li>
+<li><code>coordinator</code>
+<ul>
+<li>rooted route view</li>
+<li>rooted transition view</li>
+<li>proposal gate + service host</li>
+</ul>
+</li>
+<li><code>raftstore</code>
+<ul>
+<li>data-plane executor</li>
+<li>consume target</li>
+<li>执行 local raft/admin change</li>
+<li>发布 terminal truth</li>
+</ul>
+</li>
+</ol>
+<p>整体关系如下：</p>
+<pre class="mermaid">flowchart LR
+    C["Client / Operator / Store RPC"] --&gt; Coordinator["Coordinator\nview + service + gate"]
+    RS["Raftstore\nexecutor"] --&gt; Coordinator
+    Coordinator --&gt; RV["Route View"]
+    Coordinator --&gt; OV["Transition View"]
+    Coordinator --&gt; MR["meta/root\ntruth kernel"]
+    MR --&gt; Coordinator
+    MR --&gt; VS["VirtualLog"]
+    VS --&gt; BK["local / replicated backend"]
+</pre>
+
+<p>这套设计最重要的三个判断是：</p>
+<ol>
+<li><code>meta/root</code> 不是临时存储，而是真正的最小真相源。</li>
+<li><code>coordinator</code> 不是 authority，而是 rooted view 和服务层。</li>
+<li><code>raftstore</code> 不再是半个 control-plane，而是越来越纯的 executor。</li>
+</ol>
+<h2 id="3-当前产品模式"><a class="header" href="#3-当前产品模式">3. 当前产品模式</a></h2>
+<p>当前正式支持的 metadata/control-plane 模式只有两种：</p>
+<ol>
+<li><code>single coordinator + local meta</code></li>
+<li><code>3 coordinator + replicated meta</code></li>
+</ol>
+<p>这两种模式共享同一个 rooted metadata 领域面：</p>
+<ul>
+<li><code>meta/root/event</code></li>
+<li><code>meta/root/state</code></li>
+<li><code>meta/root/materialize</code></li>
+<li><code>meta/root/storage</code></li>
+</ul>
+<p>差别只在 backend：</p>
+<ul>
+<li><code>meta/root/backend/local</code></li>
+<li><code>meta/root/backend/replicated</code></li>
+</ul>
+<p>这点非常重要，因为它意味着：</p>
+<ul>
+<li>单机不是另一套 metadata 系统</li>
+<li>高可用也不是另一套 metadata 系统</li>
+<li>上层 <code>coordinator</code> 和 <code>raftstore</code> 不需要为了 local/replicated 分叉设计</li>
+</ul>
+<h2 id="4-为什么借鉴-delos而不是直接做成-etcd-style-metadata-service"><a class="header" href="#4-为什么借鉴-delos而不是直接做成-etcd-style-metadata-service">4. 为什么借鉴 Delos，而不是直接做成 etcd-style metadata service</a></h2>
+<p>NoKV 参考 Delos，并不是为了照搬某个协议，而是为了借它最值钱的结构原则。</p>
+<h3 id="41-最小真相源"><a class="header" href="#41-最小真相源">4.1 最小真相源</a></h3>
+<p>真正需要强一致、需要 durable、需要全局收敛的东西应该尽量少。</p>
+<p>在 NoKV 里，进入 <code>meta/root</code> 的只有：</p>
+<ul>
+<li>region descriptor truth</li>
+<li>peer change / split / merge transition truth</li>
+<li>allocator fence truth</li>
+<li>compact checkpoint</li>
+<li>retained committed tail</li>
+</ul>
+<p>这些东西不应该进入 <code>meta/root</code>：</p>
+<ul>
+<li>高频 heartbeat</li>
+<li>store load</li>
+<li>hot region 观测</li>
+<li>scheduler runtime 草稿</li>
+<li>route cache</li>
+</ul>
+<h3 id="42-truth--view--service-分离"><a class="header" href="#42-truth--view--service-分离">4.2 truth / view / service 分离</a></h3>
+<p>Delos 的关键不是“有个 log”，而是：</p>
+<ul>
+<li>truth 不等于 service</li>
+<li>service 不等于 protocol</li>
+<li>materialized view 可以从 truth 重建</li>
+</ul>
+<p>NoKV 当前已经形成：</p>
+<ul>
+<li>truth：<code>meta/root</code></li>
+<li>view：<code>coordinator/catalog</code>、<code>coordinator/view</code></li>
+<li>service：<code>coordinator/server</code></li>
+</ul>
+<h3 id="43-virtual-log而不是把上层绑死在协议细节上"><a class="header" href="#43-virtual-log而不是把上层绑死在协议细节上">4.3 virtual log，而不是把上层绑死在协议细节上</a></h3>
+<p>上层应该消费：</p>
+<ul>
+<li>committed truth stream</li>
+<li>checkpoint</li>
+<li>catch-up / install / compaction contract</li>
+</ul>
+<p>而不是：</p>
+<ul>
+<li>raft rawnode</li>
+<li>term/vote/transport 细节</li>
+<li>protocol storage layout</li>
+</ul>
+<h3 id="44-backend-可替换"><a class="header" href="#44-backend-可替换">4.4 backend 可替换</a></h3>
+<p>Delos-lite 的工程价值在于：</p>
+<ul>
+<li>上层 rooted domain 稳定</li>
+<li>底层 backend 可演进</li>
+</ul>
+<p>在 NoKV 中体现为：</p>
+<ul>
+<li><code>backend/local</code></li>
+<li><code>backend/replicated</code></li>
+</ul>
+<p>共享同一个 root domain。</p>
+<h2 id="5-和-etcd-风格-metadata-service-有什么不同"><a class="header" href="#5-和-etcd-风格-metadata-service-有什么不同">5. 和 etcd 风格 metadata service 有什么不同</a></h2>
+<p>如果直接用 etcd 存 metadata，最自然的形态通常会是：</p>
+<ul>
+<li>用 key/value 表达 region、operator、runtime state</li>
+<li>用 revision/watch 拼 catch-up</li>
+<li>用应用层 schema 解释 lifecycle</li>
+</ul>
+<p>NoKV 当前选择的是另一条路：</p>
+<ul>
+<li>写语言是 <code>RootEvent</code></li>
+<li>读语言是 <code>Snapshot + CommittedTail</code></li>
+<li>catch-up 语言是 <code>TailAdvance / TailSubscription</code></li>
+<li>lifecycle 语义内建在 <code>meta/root/state</code></li>
+</ul>
+<p>也就是说：</p>
+<blockquote>
+<p>etcd 是通用分布式 KV。
+NoKV 的 <code>meta/root</code> 是专用的 metadata truth kernel。</p>
+</blockquote>
+<p>可以把差异简单看成下面两种路线：</p>
+<pre class="mermaid">flowchart LR
+    subgraph ETCD["etcd 风格元数据服务"]
+        EKV["通用 KV / MVCC / Watch"]
+        APP["应用层 schema\n前缀、键、revision、watch 解释"]
+        EKV --&gt; APP
+    end
+
+    subgraph ROOT["NoKV rooted metadata"]
+        EVT["RootEvent\n领域写语言"]
+        STM["root state machine\nlifecycle / pending / completion"]
+        VLOG["VirtualLog\ncheckpoint + tail + subscription"]
+        EVT --&gt; STM
+        STM --&gt; VLOG
+    end
+</pre>
+
+<p>这使它更适合作为研究平台，因为你们研究的是：</p>
+<ul>
+<li>最小 truth model</li>
+<li>control-plane 分层</li>
+<li>virtual log contract</li>
+<li>backend 可替换性</li>
+</ul>
+<p>而不是如何在 etcd 的 key space 里拼出这些语义。</p>
+<h2 id="6-metaroot-到底是什么"><a class="header" href="#6-metaroot-到底是什么">6. <code>meta/root</code> 到底是什么</a></h2>
+<p>关键代码：</p>
+<ul>
+<li><code>meta/root/event/types.go</code></li>
+<li><code>meta/root/state</code></li>
+<li><code>meta/root/storage/virtual_log.go</code></li>
+</ul>
+<p><code>meta/root</code> 当前是 NoKV 的最小 metadata truth kernel。</p>
+<p>它负责：</p>
+<ul>
+<li>定义显式 <code>RootEvent</code></li>
+<li>定义 compact rooted <code>Snapshot</code></li>
+<li>定义 transition lifecycle</li>
+<li>定义 pending execution state</li>
+<li>定义 <code>VirtualLog</code> read/install/catch-up/compaction contract</li>
+</ul>
+<p>它不负责：</p>
+<ul>
+<li>route lookup API</li>
+<li>heartbeat runtime state</li>
+<li>scheduler runtime 决策</li>
+<li>scheduler/runtime lifecycle</li>
+<li>store-local recovery</li>
+</ul>
+<p>这条边界现在是对的，而且必须继续守住。</p>
+<h2 id="7-regionmetadescriptorrootevent-的分层"><a class="header" href="#7-regionmetadescriptorrootevent-的分层">7. <code>RegionMeta</code>、<code>Descriptor</code>、<code>RootEvent</code> 的分层</a></h2>
+<p>当前这三个对象已经各归其位。</p>
+<h3 id="regionmeta"><a class="header" href="#regionmeta"><code>RegionMeta</code></a></h3>
+<p>位置：</p>
+<ul>
+<li><code>raftstore/localmeta</code></li>
+</ul>
+<p>角色：</p>
+<ul>
+<li>store-local execution / recovery object</li>
+<li>单机恢复真相</li>
+<li>不应该成为跨层 authority schema</li>
+</ul>
+<h3 id="descriptor"><a class="header" href="#descriptor"><code>Descriptor</code></a></h3>
+<p>位置：</p>
+<ul>
+<li><code>raftstore/descriptor</code></li>
+</ul>
+<p>角色：</p>
+<ul>
+<li>跨层共享的 topology object</li>
+<li>Coordinator route view 的语言</li>
+<li>rooted truth payload 的主要对象</li>
+</ul>
+<h3 id="rootevent"><a class="header" href="#rootevent"><code>RootEvent</code></a></h3>
+<p>位置：</p>
+<ul>
+<li><code>meta/root/event/types.go</code></li>
+</ul>
+<p>角色：</p>
+<ul>
+<li>explicit rooted truth transition</li>
+<li>metadata/control-plane 正式写语言</li>
+</ul>
+<p>一句话：</p>
+<ul>
+<li><code>RegionMeta</code> 是本地执行态</li>
+<li><code>Descriptor</code> 是共享拓扑对象</li>
+<li><code>RootEvent</code> 是 durable truth transition</li>
+</ul>
+<h2 id="8-meta-和-coordinator-现在隔离得怎么样"><a class="header" href="#8-meta-和-coordinator-现在隔离得怎么样">8. <code>meta</code> 和 <code>coordinator</code> 现在隔离得怎么样</a></h2>
+<p>当前这条边界已经比较清楚，而且是当前主线最重要的成果之一。</p>
+<h3 id="metaroot-负责"><a class="header" href="#metaroot-负责"><code>meta/root</code> 负责</a></h3>
+<ul>
+<li>保存和恢复最小 rooted truth</li>
+<li>transition state machine</li>
+<li>checkpoint + retained tail</li>
+<li>catch-up / install / compaction contract</li>
+</ul>
+<h3 id="coordinator-负责"><a class="header" href="#coordinator-负责"><code>coordinator</code> 负责</a></h3>
+<ul>
+<li>rooted route view</li>
+<li>rooted transition view</li>
+<li>proposal gate</li>
+<li>liveness service</li>
+<li>对外 RPC</li>
+</ul>
+<h3 id="已经做到的隔离"><a class="header" href="#已经做到的隔离">已经做到的隔离</a></h3>
+<ol>
+<li><code>coordinator</code> 不再维护第二份 authority metadata。</li>
+<li><code>coordinator</code> 写路径是 <code>persist truth first, reload rooted view later</code>。</li>
+<li>liveness 已经从 truth path 分开。</li>
+<li>transition/debug surface 是 rooted projection，而不是 <code>coordinator</code> 自己维护的平行状态机。</li>
+</ol>
+<p>这意味着：</p>
+<ul>
+<li><code>coordinator</code> 可以失效</li>
+<li><code>coordinator</code> 可以重建</li>
+<li><code>coordinator</code> view 可以被丢弃并重建</li>
+<li>truth 仍然稳定留在 <code>meta/root</code></li>
+</ul>
+<h2 id="9-coordinator-当前到底做什么"><a class="header" href="#9-coordinator-当前到底做什么">9. <code>coordinator</code> 当前到底做什么</a></h2>
+<p>关键代码：</p>
+<ul>
+<li><code>coordinator/storage/root.go</code></li>
+<li><code>coordinator/catalog/cluster.go</code></li>
+<li><code>coordinator/server/service.go</code></li>
+<li><code>coordinator/server/transition_service.go</code></li>
+</ul>
+<p>当前 <code>coordinator</code> 负责：</p>
+<ul>
+<li>rooted snapshot -&gt; runtime route view</li>
+<li>rooted pending transition -&gt; transition view</li>
+<li>leader-only proposal gate</li>
+<li>liveness / allocator / route RPC</li>
+<li>assessment / inspection RPC</li>
+</ul>
+<p>也就是说：</p>
+<p><code>coordinator</code> 不是 metadata DB。<code>coordinator</code> 是 rooted metadata 的服务宿主和 view 宿主。</p>
+<h2 id="10-raftstore-当前到底做什么"><a class="header" href="#10-raftstore-当前到底做什么">10. <code>raftstore</code> 当前到底做什么</a></h2>
+<p>关键代码：</p>
+<ul>
+<li><code>raftstore/store/transition_builder.go</code></li>
+<li><code>raftstore/store/transition_executor.go</code></li>
+<li><code>raftstore/store/transition_outcome.go</code></li>
+<li><code>raftstore/store/membership_ops.go</code></li>
+<li><code>raftstore/store/admin_ops.go</code></li>
+</ul>
+<p>当前 <code>raftstore</code> 越来越接近这样的形态：</p>
+<ol>
+<li>build target</li>
+<li>execute target</li>
+<li>local apply</li>
+<li>publish terminal truth</li>
+</ol>
+<p>也就是说，它越来越像一个纯 executor，而不是半个 control-plane。</p>
+<h2 id="11-virtuallog-是怎么设计的"><a class="header" href="#11-virtuallog-是怎么设计的">11. <code>VirtualLog</code> 是怎么设计的</a></h2>
+<p>核心在：</p>
+<ul>
+<li><code>meta/root/storage/virtual_log.go</code></li>
+</ul>
+<p>关键对象：</p>
+<ul>
+<li><code>Checkpoint</code></li>
+<li><code>CommittedTail</code></li>
+<li><code>ObservedCommitted</code></li>
+<li><code>TailToken</code></li>
+<li><code>TailAdvance</code></li>
+<li><code>TailWindow</code></li>
+<li><code>TailSubscription</code></li>
+<li><code>TailCompactionPlan</code></li>
+</ul>
+<h3 id="它到底表达什么"><a class="header" href="#它到底表达什么">它到底表达什么</a></h3>
+<p>不是“直接暴露 raft log”。</p>
+<p>它表达的是：</p>
+<ol>
+<li>当前 compact rooted truth 是什么</li>
+<li>当前 retained committed tail 是什么</li>
+<li>相对上次观察，这次发生了什么变化</li>
+<li>该 refresh、ack window，还是 install bootstrap</li>
+</ol>
+<h3 id="读写合同"><a class="header" href="#读写合同">读写合同</a></h3>
+<pre class="mermaid">flowchart TD
+    EVT["RootEvent append"] --&gt; CT["CommittedTail"]
+    CT --&gt; CK["Checkpoint"]
+    CK --&gt; OC["ObservedCommitted"]
+    OC --&gt; TA["TailAdvance"]
+    TA --&gt; TS["TailSubscription"]
+</pre>
+
+<h3 id="follower-catch-up-逻辑"><a class="header" href="#follower-catch-up-逻辑">follower catch-up 逻辑</a></h3>
+<p>当前 follower 不再只是定时 reload，而是通过：</p>
+<ul>
+<li><code>TailSubscription.Next(...)</code></li>
+<li><code>TailAdvance.CatchUpAction()</code></li>
+</ul>
+<p>来决定：</p>
+<ul>
+<li><code>Idle</code></li>
+<li><code>RefreshState</code></li>
+<li><code>AcknowledgeWindow</code></li>
+<li><code>InstallBootstrap</code></li>
+</ul>
+<p>这使 catch-up 语义正式进入 VirtualLog contract，而不是散落在入口层的 if/else。</p>
+<h2 id="12-local-backend-和-replicated-backend"><a class="header" href="#12-local-backend-和-replicated-backend">12. local backend 和 replicated backend</a></h2>
+<h3 id="backendlocal"><a class="header" href="#backendlocal"><code>backend/local</code></a></h3>
+<p>位置：</p>
+<ul>
+<li><code>meta/root/backend/local</code></li>
+</ul>
+<p>作用：</p>
+<ul>
+<li>单节点 rooted metadata 存储</li>
+<li>持久化文件：
+<ul>
+<li><code>root.checkpoint.binpb</code></li>
+<li><code>root.events.wal</code></li>
+</ul>
+</li>
+</ul>
+<h3 id="backendreplicated"><a class="header" href="#backendreplicated"><code>backend/replicated</code></a></h3>
+<p>位置：</p>
+<ul>
+<li><code>meta/root/backend/replicated</code></li>
+</ul>
+<p>作用：</p>
+<ul>
+<li>replicated metadata backend</li>
+<li>当前仍然是 raft 驱动</li>
+<li>但上层已经被 <code>VirtualLog</code> / <code>ObservedCommitted</code> 解耦</li>
+</ul>
+<p>当前大致分层：</p>
+<ul>
+<li><code>network_driver.go</code>
+<ul>
+<li>rawnode / transport / tick / campaign</li>
+</ul>
+</li>
+<li><code>network_ready.go</code>
+<ul>
+<li>ready drain / protocol persistence / committed decode</li>
+</ul>
+</li>
+<li><code>network_virtual_log.go</code>
+<ul>
+<li>VirtualLog-facing methods</li>
+</ul>
+</li>
+<li><code>virtual_log_adapter.go</code>
+<ul>
+<li>rooted virtual-log adapter</li>
+</ul>
+</li>
+<li><code>store.go</code>
+<ul>
+<li>rooted state machine host</li>
+</ul>
+</li>
+</ul>
+<h2 id="13-持久化布局"><a class="header" href="#13-持久化布局">13. 持久化布局</a></h2>
+<h3 id="rooted-metadata"><a class="header" href="#rooted-metadata">rooted metadata</a></h3>
+<ul>
+<li><code>root.checkpoint.binpb</code></li>
+<li><code>root.events.wal</code></li>
+<li><code>root.raft.bin</code></li>
+</ul>
+<h3 id="store-local-metadata"><a class="header" href="#store-local-metadata">store-local metadata</a></h3>
+<ul>
+<li><code>replicas.binpb</code></li>
+<li><code>raft-progress.binpb</code></li>
+</ul>
+<h3 id="snapshot"><a class="header" href="#snapshot">snapshot</a></h3>
+<ul>
+<li><code>snapshot.json</code></li>
+<li><code>tables/*.sst</code></li>
+</ul>
+<p>这几组文件的角色已经比较清楚：</p>
+<ul>
+<li><code>meta/root</code>：cluster truth</li>
+<li><code>root.raft.bin</code>：protocol recovery state</li>
+<li><code>raftstore/localmeta</code>：store-local recovery</li>
+<li><code>snapshot/</code>：region-scoped snapshot contract</li>
+</ul>
+<h2 id="14-实际调用逻辑"><a class="header" href="#14-实际调用逻辑">14. 实际调用逻辑</a></h2>
+<h3 id="topology-变更写路径"><a class="header" href="#topology-变更写路径">topology 变更写路径</a></h3>
+<pre class="mermaid">sequenceDiagram
+    participant OP as Operator/Client
+    participant RS as raftstore
+    participant Coordinator as Coordinator
+    participant MR as meta/root
+
+    OP-&gt;&gt;RS: 构造 peer/split/merge 目标
+    RS-&gt;&gt;Coordinator: publish planned RootEvent
+    Coordinator-&gt;&gt;MR: lifecycle assessment + append truth
+    RS-&gt;&gt;RS: propose raft/admin command
+    RS-&gt;&gt;Coordinator: publish terminal RootEvent
+    Coordinator-&gt;&gt;MR: append terminal truth
+</pre>
+
+<h3 id="follower-catch-up"><a class="header" href="#follower-catch-up">follower catch-up</a></h3>
+<pre class="mermaid">sequenceDiagram
+    participant F as Coordinator follower
+    participant SUB as TailSubscription
+    participant MR as meta/root
+
+    F-&gt;&gt;SUB: Next(ctx, fallback)
+    SUB-&gt;&gt;MR: ObserveTail / WaitForTail
+    MR--&gt;&gt;SUB: TailAdvance
+    SUB--&gt;&gt;F: CatchUpAction
+    alt RefreshState / InstallBootstrap
+        F-&gt;&gt;MR: reload rooted state
+        F-&gt;&gt;SUB: Acknowledge
+    else AcknowledgeWindow
+        F-&gt;&gt;SUB: Acknowledge
+    end
+</pre>
+
+<h2 id="15-设计理念"><a class="header" href="#15-设计理念">15. 设计理念</a></h2>
+<p>这套设计背后真正坚持的理念有五条：</p>
+<h3 id="151-真相必须小"><a class="header" href="#151-真相必须小">15.1 真相必须小</a></h3>
+<h3 id="152-truth--view--runtime--executor-必须分层"><a class="header" href="#152-truth--view--runtime--executor-必须分层">15.2 truth / view / runtime / executor 必须分层</a></h3>
+<h3 id="153-上层不应该直接被协议绑死"><a class="header" href="#153-上层不应该直接被协议绑死">15.3 上层不应该直接被协议绑死</a></h3>
+<h3 id="154-local-和-replicated-必须共享同一个领域面"><a class="header" href="#154-local-和-replicated-必须共享同一个领域面">15.4 local 和 replicated 必须共享同一个领域面</a></h3>
+<h3 id="155-研究平台首先要可解释而不是先堆现成功能"><a class="header" href="#155-研究平台首先要可解释而不是先堆现成功能">15.5 研究平台首先要可解释，而不是先堆现成功能</a></h3>
+<h2 id="16-参考对象"><a class="header" href="#16-参考对象">16. 参考对象</a></h2>
+<h3 id="delos"><a class="header" href="#delos">Delos</a></h3>
+<p>借鉴点：</p>
+<ul>
+<li>最小 truth kernel</li>
+<li>truth / service 分离</li>
+<li>VirtualLog contract</li>
+<li>backend 可替换</li>
+</ul>
+<h3 id="foundationdb"><a class="header" href="#foundationdb">FoundationDB</a></h3>
+<p>借鉴点：</p>
+<ul>
+<li>小而强的一致性根</li>
+<li>由小 truth 核心支撑更大的服务面</li>
+</ul>
+<h3 id="tikv--pd--etcd"><a class="header" href="#tikv--pd--etcd">TiKV / PD + etcd</a></h3>
+<p>对比对象：</p>
+<ul>
+<li>让我们更明确看见，为什么 <code>coordinator</code> 不该重新长成 authority metadata service</li>
+</ul>
+<h3 id="cockroachdb"><a class="header" href="#cockroachdb">CockroachDB</a></h3>
+<p>对比对象：</p>
+<ul>
+<li>它更偏 in-band metadata</li>
+<li>NoKV 当前选择的是小型 out-of-band truth kernel</li>
+</ul>
+<h2 id="17-当前已经落地的边界"><a class="header" href="#17-当前已经落地的边界">17. 当前已经落地的边界</a></h2>
+<ul>
+<li><code>meta/root</code> 已成为最小 truth kernel。</li>
+<li><code>coordinator</code> 已退出 authority 角色，主要承担 rooted view、service 和 proposal gate。</li>
+<li><code>raftstore</code> 已收敛为 executor，并通过 planned / terminal truth 与控制面交互。</li>
+<li><code>VirtualLog</code> contract 已经成型，并被 local / replicated backend 共享。</li>
+<li>route freshness、root lag、catch-up state、transition assessment 已进入 Coordinator RPC。</li>
+<li>execution-plane v1 已有 admission / outcome / publish / restart 状态和 admin diagnostics。</li>
+</ul>
+<h2 id="18-当前没有实现的能力"><a class="header" href="#18-当前没有实现的能力">18. 当前没有实现的能力</a></h2>
+<ul>
+<li>还没有自动 scheduler/control-plane runtime policy。</li>
+<li>还没有 richer transition phases，例如 <code>Published</code> / <code>Stalled</code>。</li>
+<li>还没有让客户端完整消费所有 freshness / degraded / catch-up 字段的策略层。</li>
+<li><code>VirtualLog</code> 还没有更强的 push/stream API。</li>
+<li>replicated backend 还可以继续研究更强的 commit / compaction / install 策略。</li>
+<li><code>raftstore</code> 仍有进一步纯 executor 化空间，但 v1 边界已经可用。</li>
+</ul>
+<h2 id="19-这套设计为什么适合作为研究平台"><a class="header" href="#19-这套设计为什么适合作为研究平台">19. 这套设计为什么适合作为研究平台</a></h2>
+<p>因为它现在已经具备：</p>
+<ol>
+<li>足够清楚的 truth kernel</li>
+<li>足够稳定的 view/service 边界</li>
+<li>足够清楚的 executor 面</li>
+<li>足够独立的 replicated backend</li>
+</ol>
+<p>所以你可以分别研究：</p>
+<ul>
+<li>metadata truth model</li>
+<li>scheduler/runtime policy</li>
+<li>scheduler/orchestrator</li>
+<li>replicated protocol/backend</li>
+<li>catch-up / compaction / install 策略</li>
+</ul>
+<p>而不需要先推翻整个系统。</p>
+<h2 id="20-总结"><a class="header" href="#20-总结">20. 总结</a></h2>
+<p>NoKV 当前的 metadata/control-plane 设计，真正值钱的不是“实现了一个新的元数据存储”，而是：</p>
+<ul>
+<li>它把最小 truth、view、runtime、executor 明确拆开了</li>
+<li>它把 <code>meta/root</code> 做成了一个专用的 rooted metadata truth kernel，而不是通用 KV</li>
+<li>它借鉴 Delos 的地方是结构原则，而不是协议照搬</li>
+<li>它让 local / replicated、单机 / 分布式、truth / view 都进入了同一个稳定框架</li>
+</ul>
+<p>这也是为什么这条主线现在已经不仅能支撑代码实现，还能支撑后续继续做 control-plane、scheduler、VirtualLog 和 protocol 方向的研究。</p>
+
+                    </main>
+
+                    <nav class="nav-wrapper" aria-label="Page navigation">
+                        <!-- Mobile navigation buttons -->
+                            <a rel="prev" href="../notes/2026-03-31-sst-snapshot-install.html" class="mobile-nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                                <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M41.4 233.4c-12.5 12.5-12.5 32.8 0 45.3l160 160c12.5 12.5 32.8 12.5 45.3 0s12.5-32.8 0-45.3L109.3 256 246.6 118.6c12.5-12.5 12.5-32.8 0-45.3s-32.8-12.5-45.3 0l-160 160z"/></svg></span>
+                            </a>
+
+                            <a rel="next prefetch" href="../notes/2026-04-05-range-filter-from-grf.html" class="mobile-nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                                <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M278.6 233.4c12.5 12.5 12.5 32.8 0 45.3l-160 160c-12.5 12.5-32.8 12.5-45.3 0s-12.5-32.8 0-45.3L210.7 256 73.4 118.6c-12.5-12.5-12.5-32.8 0-45.3s32.8-12.5 45.3 0l160 160z"/></svg></span>
+                            </a>
+
+                        <div style="clear: both"></div>
+                    </nav>
+                </div>
+            </div>
+
+            <nav class="nav-wide-wrapper" aria-label="Page navigation">
+                    <a rel="prev" href="../notes/2026-03-31-sst-snapshot-install.html" class="nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                        <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M41.4 233.4c-12.5 12.5-12.5 32.8 0 45.3l160 160c12.5 12.5 32.8 12.5 45.3 0s12.5-32.8 0-45.3L109.3 256 246.6 118.6c12.5-12.5 12.5-32.8 0-45.3s-32.8-12.5-45.3 0l-160 160z"/></svg></span>
+                    </a>
+
+                    <a rel="next prefetch" href="../notes/2026-04-05-range-filter-from-grf.html" class="nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                        <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M278.6 233.4c12.5 12.5 12.5 32.8 0 45.3l-160 160c-12.5 12.5-32.8 12.5-45.3 0s-12.5-32.8 0-45.3L210.7 256 73.4 118.6c-12.5-12.5-12.5-32.8 0-45.3s32.8-12.5 45.3 0l160 160z"/></svg></span>
+                    </a>
+            </nav>
+
+        </div>
+
+        <template id=fa-eye><span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 576 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M288 32c-80.8 0-145.5 36.8-192.6 80.6C48.6 156 17.3 208 2.5 243.7c-3.3 7.9-3.3 16.7 0 24.6C17.3 304 48.6 356 95.4 399.4C142.5 443.2 207.2 480 288 480s145.5-36.8 192.6-80.6c46.8-43.5 78.1-95.4 93-131.1c3.3-7.9 3.3-16.7 0-24.6c-14.9-35.7-46.2-87.7-93-131.1C433.5 68.8 368.8 32 288 32zM432 256c0 79.5-64.5 144-144 144s-144-64.5-144-144s64.5-144 144-144s144 64.5 144 144zM288 192c0 35.3-28.7 64-64 64c-11.5 0-22.3-3-31.6-8.4c-.2 2.8-.4 5.5-.4 8.4c0 53 43 96 96 96s96-43 96-96s-43-96-96-96c-2.8 0-5.6 .1-8.4 .4c5.3 9.3 8.4 20.1 8.4 31.6z"/></svg></span></template>
+        <template id=fa-eye-slash><span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M38.8 5.1C28.4-3.1 13.3-1.2 5.1 9.2S-1.2 34.7 9.2 42.9l592 464c10.4 8.2 25.5 6.3 33.7-4.1s6.3-25.5-4.1-33.7L525.6 386.7c39.6-40.6 66.4-86.1 79.9-118.4c3.3-7.9 3.3-16.7 0-24.6c-14.9-35.7-46.2-87.7-93-131.1C465.5 68.8 400.8 32 320 32c-68.2 0-125 26.3-169.3 60.8L38.8 5.1zM223.1 149.5C248.6 126.2 282.7 112 320 112c79.5 0 144 64.5 144 144c0 24.9-6.3 48.3-17.4 68.7L408 294.5c5.2-11.8 8-24.8 8-38.5c0-53-43-96-96-96c-2.8 0-5.6 .1-8.4 .4c5.3 9.3 8.4 20.1 8.4 31.6c0 10.2-2.4 19.8-6.6 28.3l-90.3-70.8zm223.1 298L373 389.9c-16.4 6.5-34.3 10.1-53 10.1c-79.5 0-144-64.5-144-144c0-6.9 .5-13.6 1.4-20.2L83.1 161.5C60.3 191.2 44 220.8 34.5 243.7c-3.3 7.9-3.3 16.7 0 24.6c14.9 35.7 46.2 87.7 93 131.1C174.5 443.2 239.2 480 320 480c47.8 0 89.9-12.9 126.2-32.5z"/></svg></span></template>
+        <template id=fa-copy><span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M502.6 70.63l-61.25-61.25C435.4 3.371 427.2 0 418.7 0H255.1c-35.35 0-64 28.66-64 64l.0195 256C192 355.4 220.7 384 256 384h192c35.2 0 64-28.8 64-64V93.25C512 84.77 508.6 76.63 502.6 70.63zM464 320c0 8.836-7.164 16-16 16H255.1c-8.838 0-16-7.164-16-16L239.1 64.13c0-8.836 7.164-16 16-16h128L384 96c0 17.67 14.33 32 32 32h47.1V320zM272 448c0 8.836-7.164 16-16 16H63.1c-8.838 0-16-7.164-16-16L47.98 192.1c0-8.836 7.164-16 16-16H160V128H63.99c-35.35 0-64 28.65-64 64l.0098 256C.002 483.3 28.66 512 64 512h192c35.2 0 64-28.8 64-64v-32h-47.1L272 448z"/></svg></span></template>
+        <template id=fa-play><span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 384 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M73 39c-14.8-9.1-33.4-9.4-48.5-.9S0 62.6 0 80V432c0 17.4 9.4 33.4 24.5 41.9s33.7 8.1 48.5-.9L361 297c14.3-8.7 23-24.2 23-41s-8.7-32.2-23-41L73 39z"/></svg></span></template>
+        <template id=fa-clock-rotate-left><span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M75 75L41 41C25.9 25.9 0 36.6 0 57.9V168c0 13.3 10.7 24 24 24H134.1c21.4 0 32.1-25.9 17-41l-30.8-30.8C155 85.5 203 64 256 64c106 0 192 86 192 192s-86 192-192 192c-40.8 0-78.6-12.7-109.7-34.4c-14.5-10.1-34.4-6.6-44.6 7.9s-6.6 34.4 7.9 44.6C151.2 495 201.7 512 256 512c141.4 0 256-114.6 256-256S397.4 0 256 0C185.3 0 121.3 28.7 75 75zm181 53c-13.3 0-24 10.7-24 24V256c0 6.4 2.5 12.5 7 17l72 72c9.4 9.4 24.6 9.4 33.9 0s9.4-24.6 0-33.9l-65-65V152c0-13.3-10.7-24-24-24z"/></svg></span></template>
+
+
+
+        <script>
+            window.playground_copyable = true;
+        </script>
+
+
+        <script src="../elasticlunr-ef4e11c1.min.js"></script>
+        <script src="../mark-09e88c2c.min.js"></script>
+        <script src="../searcher-c2a407aa.js"></script>
+
+        <script src="../clipboard-1626706a.min.js"></script>
+        <script src="../highlight-abc7f01d.js"></script>
+        <script src="../book-a0b12cfe.js"></script>
+
+        <!-- Custom JS scripts -->
+        <script src="../docs/custom-732fa610.js"></script>
+        <script src="../docs/mermaid-init-8a66ee6c.js"></script>
+
+
+
+    </div>
+    </body>
+</html>

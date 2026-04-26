@@ -1,0 +1,493 @@
+<!DOCTYPE HTML>
+<html lang="en" class="light sidebar-visible" dir="ltr">
+    <head>
+        <!-- Book generated using mdBook -->
+        <meta charset="UTF-8">
+        <title>2026-04-05 Range Filter：从 GRF 得到启发，但不照搬 GRF - NoKV Docs</title>
+
+
+        <!-- Custom HTML head -->
+
+        <meta name="description" content="NoKV design, architecture, migration, and testing documentation.">
+        <meta name="viewport" content="width=device-width, initial-scale=1">
+        <meta name="theme-color" content="#ffffff">
+
+        <link rel="icon" href="../favicon-de23e50b.svg">
+        <link rel="shortcut icon" href="../favicon-8114d1fc.png">
+        <link rel="stylesheet" href="../css/variables-8adf115d.css">
+        <link rel="stylesheet" href="../css/general-2459343d.css">
+        <link rel="stylesheet" href="../css/chrome-ae938929.css">
+        <link rel="stylesheet" href="../css/print-9e4910d8.css" media="print">
+
+        <!-- Fonts -->
+        <link rel="stylesheet" href="../fonts/fonts-9644e21d.css">
+
+        <!-- Highlight.js Stylesheets -->
+        <link rel="stylesheet" id="mdbook-highlight-css" href="../highlight-493f70e1.css">
+        <link rel="stylesheet" id="mdbook-tomorrow-night-css" href="../tomorrow-night-4c0ae647.css">
+        <link rel="stylesheet" id="mdbook-ayu-highlight-css" href="../ayu-highlight-3fdfc3ac.css">
+
+        <!-- Custom theme stylesheets -->
+        <link rel="stylesheet" href="../docs/custom-a69f6233.css">
+
+
+        <!-- Provide site root and default themes to javascript -->
+        <script>
+            const path_to_root = "../";
+            const default_light_theme = "light";
+            const default_dark_theme = "navy";
+            window.path_to_searchindex_js = "../searchindex-587b1194.js";
+        </script>
+        <!-- Start loading toc.js asap -->
+        <script src="../toc-2018305d.js"></script>
+    </head>
+    <body>
+    <div id="mdbook-help-container">
+        <div id="mdbook-help-popup">
+            <h2 class="mdbook-help-title">Keyboard shortcuts</h2>
+            <div>
+                <p>Press <kbd>←</kbd> or <kbd>→</kbd> to navigate between chapters</p>
+                <p>Press <kbd>S</kbd> or <kbd>/</kbd> to search in the book</p>
+                <p>Press <kbd>?</kbd> to show this help</p>
+                <p>Press <kbd>Esc</kbd> to hide this help</p>
+            </div>
+        </div>
+    </div>
+    <div id="mdbook-body-container">
+        <!-- Work around some values being stored in localStorage wrapped in quotes -->
+        <script>
+            try {
+                let theme = localStorage.getItem('mdbook-theme');
+                let sidebar = localStorage.getItem('mdbook-sidebar');
+
+                if (theme.startsWith('"') && theme.endsWith('"')) {
+                    localStorage.setItem('mdbook-theme', theme.slice(1, theme.length - 1));
+                }
+
+                if (sidebar.startsWith('"') && sidebar.endsWith('"')) {
+                    localStorage.setItem('mdbook-sidebar', sidebar.slice(1, sidebar.length - 1));
+                }
+            } catch (e) { }
+        </script>
+
+        <!-- Set the theme before any content is loaded, prevents flash -->
+        <script>
+            const default_theme = window.matchMedia("(prefers-color-scheme: dark)").matches ? default_dark_theme : default_light_theme;
+            let theme;
+            try { theme = localStorage.getItem('mdbook-theme'); } catch(e) { }
+            if (theme === null || theme === undefined) { theme = default_theme; }
+            const html = document.documentElement;
+            html.classList.remove('light')
+            html.classList.add(theme);
+            html.classList.add("js");
+        </script>
+
+        <input type="checkbox" id="mdbook-sidebar-toggle-anchor" class="hidden">
+
+        <!-- Hide / unhide sidebar before it is displayed -->
+        <script>
+            let sidebar = null;
+            const sidebar_toggle = document.getElementById("mdbook-sidebar-toggle-anchor");
+            if (document.body.clientWidth >= 1080) {
+                try { sidebar = localStorage.getItem('mdbook-sidebar'); } catch(e) { }
+                sidebar = sidebar || 'visible';
+            } else {
+                sidebar = 'hidden';
+                sidebar_toggle.checked = false;
+            }
+            if (sidebar === 'visible') {
+                sidebar_toggle.checked = true;
+            } else {
+                html.classList.remove('sidebar-visible');
+            }
+        </script>
+
+        <nav id="mdbook-sidebar" class="sidebar" aria-label="Table of contents">
+            <!-- populated by js -->
+            <mdbook-sidebar-scrollbox class="sidebar-scrollbox"></mdbook-sidebar-scrollbox>
+            <noscript>
+                <iframe class="sidebar-iframe-outer" src="../toc.html"></iframe>
+            </noscript>
+            <div id="mdbook-sidebar-resize-handle" class="sidebar-resize-handle">
+                <div class="sidebar-resize-indicator"></div>
+            </div>
+        </nav>
+
+        <div id="mdbook-page-wrapper" class="page-wrapper">
+
+            <div class="page">
+                <div id="mdbook-menu-bar-hover-placeholder"></div>
+                <div id="mdbook-menu-bar" class="menu-bar sticky">
+                    <div class="left-buttons">
+                        <label id="mdbook-sidebar-toggle" class="icon-button" for="mdbook-sidebar-toggle-anchor" title="Toggle Table of Contents" aria-label="Toggle Table of Contents" aria-controls="mdbook-sidebar">
+                            <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M0 96C0 78.3 14.3 64 32 64H416c17.7 0 32 14.3 32 32s-14.3 32-32 32H32C14.3 128 0 113.7 0 96zM0 256c0-17.7 14.3-32 32-32H416c17.7 0 32 14.3 32 32s-14.3 32-32 32H32c-17.7 0-32-14.3-32-32zM448 416c0 17.7-14.3 32-32 32H32c-17.7 0-32-14.3-32-32s14.3-32 32-32H416c17.7 0 32 14.3 32 32z"/></svg></span>
+                        </label>
+                        <button id="mdbook-theme-toggle" class="icon-button" type="button" title="Change theme" aria-label="Change theme" aria-haspopup="true" aria-expanded="false" aria-controls="mdbook-theme-list">
+                            <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 576 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M371.3 367.1c27.3-3.9 51.9-19.4 67.2-42.9L600.2 74.1c12.6-19.5 9.4-45.3-7.6-61.2S549.7-4.4 531.1 9.6L294.4 187.2c-24 18-38.2 46.1-38.4 76.1L371.3 367.1zm-19.6 25.4l-116-104.4C175.9 290.3 128 339.6 128 400c0 3.9 .2 7.8 .6 11.6c1.8 17.5-10.2 36.4-27.8 36.4H96c-17.7 0-32 14.3-32 32s14.3 32 32 32H240c61.9 0 112-50.1 112-112c0-2.5-.1-5-.2-7.5z"/></svg></span>
+                        </button>
+                        <ul id="mdbook-theme-list" class="theme-popup" aria-label="Themes" role="menu">
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-default_theme">Auto</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-light">Light</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-rust">Rust</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-coal">Coal</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-navy">Navy</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-ayu">Ayu</button></li>
+                        </ul>
+                        <button id="mdbook-search-toggle" class="icon-button" type="button" title="Search (`/`)" aria-label="Toggle Searchbar" aria-expanded="false" aria-keyshortcuts="/ s" aria-controls="mdbook-searchbar">
+                            <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M416 208c0 45.9-14.9 88.3-40 122.7L502.6 457.4c12.5 12.5 12.5 32.8 0 45.3s-32.8 12.5-45.3 0L330.7 376c-34.4 25.2-76.8 40-122.7 40C93.1 416 0 322.9 0 208S93.1 0 208 0S416 93.1 416 208zM208 352c79.5 0 144-64.5 144-144s-64.5-144-144-144S64 128.5 64 208s64.5 144 144 144z"/></svg></span>
+                        </button>
+                    </div>
+
+                    <h1 class="menu-title">NoKV Docs</h1>
+
+                    <div class="right-buttons">
+                        <a href="../print.html" title="Print this book" aria-label="Print this book">
+                            <span class=fa-svg id="print-button"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M128 0C92.7 0 64 28.7 64 64v96h64V64H354.7L384 93.3V160h64V93.3c0-17-6.7-33.3-18.7-45.3L400 18.7C388 6.7 371.7 0 354.7 0H128zM384 352v32 64H128V384 368 352H384zm64 32h32c17.7 0 32-14.3 32-32V256c0-35.3-28.7-64-64-64H64c-35.3 0-64 28.7-64 64v96c0 17.7 14.3 32 32 32H64v64c0 35.3 28.7 64 64 64H384c35.3 0 64-28.7 64-64V384zm-16-88c-13.3 0-24-10.7-24-24s10.7-24 24-24s24 10.7 24 24s-10.7 24-24 24z"/></svg></span>
+                        </a>
+                        <a href="https://github.com/feichai0017/NoKV" title="Git repository" aria-label="Git repository">
+                            <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 496 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M165.9 397.4c0 2-2.3 3.6-5.2 3.6-3.3.3-5.6-1.3-5.6-3.6 0-2 2.3-3.6 5.2-3.6 3-.3 5.6 1.3 5.6 3.6zm-31.1-4.5c-.7 2 1.3 4.3 4.3 4.9 2.6 1 5.6 0 6.2-2s-1.3-4.3-4.3-5.2c-2.6-.7-5.5.3-6.2 2.3zm44.2-1.7c-2.9.7-4.9 2.6-4.6 4.9.3 2 2.9 3.3 5.9 2.6 2.9-.7 4.9-2.6 4.6-4.6-.3-1.9-3-3.2-5.9-2.9zM244.8 8C106.1 8 0 113.3 0 252c0 110.9 69.8 205.8 169.5 239.2 12.8 2.3 17.3-5.6 17.3-12.1 0-6.2-.3-40.4-.3-61.4 0 0-70 15-84.7-29.8 0 0-11.4-29.1-27.8-36.6 0 0-22.9-15.7 1.6-15.4 0 0 24.9 2 38.6 25.8 21.9 38.6 58.6 27.5 72.9 20.9 2.3-16 8.8-27.1 16-33.7-55.9-6.2-112.3-14.3-112.3-110.5 0-27.5 7.6-41.3 23.6-58.9-2.6-6.5-11.1-33.3 2.6-67.9 20.9-6.5 69 27 69 27 20-5.6 41.5-8.5 62.8-8.5s42.8 2.9 62.8 8.5c0 0 48.1-33.6 69-27 13.7 34.7 5.2 61.4 2.6 67.9 16 17.7 25.8 31.5 25.8 58.9 0 96.5-58.9 104.2-114.8 110.5 9.2 7.9 17 22.9 17 46.4 0 33.7-.3 75.4-.3 83.6 0 6.5 4.6 14.4 17.3 12.1C428.2 457.8 496 362.9 496 252 496 113.3 383.5 8 244.8 8zM97.2 352.9c-1.3 1-1 3.3.7 5.2 1.6 1.6 3.9 2.3 5.2 1 1.3-1 1-3.3-.7-5.2-1.6-1.6-3.9-2.3-5.2-1zm-10.8-8.1c-.7 1.3.3 2.9 2.3 3.9 1.6 1 3.6.7 4.3-.7.7-1.3-.3-2.9-2.3-3.9-2-.6-3.6-.3-4.3.7zm32.4 35.6c-1.6 1.3-1 4.3 1.3 6.2 2.3 2.3 5.2 2.6 6.5 1 1.3-1.3.7-4.3-1.3-6.2-2.2-2.3-5.2-2.6-6.5-1zm-11.4-14.7c-1.6 1-1.6 3.6 0 5.9 1.6 2.3 4.3 3.3 5.6 2.3 1.6-1.3 1.6-3.9 0-6.2-1.4-2.3-4-3.3-5.6-2z"/></svg></span>
+                        </a>
+
+                    </div>
+                </div>
+
+                <div id="mdbook-search-wrapper" class="hidden">
+                    <form id="mdbook-searchbar-outer" class="searchbar-outer">
+                        <div class="search-wrapper">
+                            <input type="search" id="mdbook-searchbar" name="searchbar" placeholder="Search this book ..." aria-controls="mdbook-searchresults-outer" aria-describedby="searchresults-header">
+                            <div class="spinner-wrapper">
+                                <span class=fa-svg id="fa-spin"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M304 48c0-26.5-21.5-48-48-48s-48 21.5-48 48s21.5 48 48 48s48-21.5 48-48zm0 416c0-26.5-21.5-48-48-48s-48 21.5-48 48s21.5 48 48 48s48-21.5 48-48zM48 304c26.5 0 48-21.5 48-48s-21.5-48-48-48s-48 21.5-48 48s21.5 48 48 48zm464-48c0-26.5-21.5-48-48-48s-48 21.5-48 48s21.5 48 48 48s48-21.5 48-48zM142.9 437c18.7-18.7 18.7-49.1 0-67.9s-49.1-18.7-67.9 0s-18.7 49.1 0 67.9s49.1 18.7 67.9 0zm0-294.2c18.7-18.7 18.7-49.1 0-67.9S93.7 56.2 75 75s-18.7 49.1 0 67.9s49.1 18.7 67.9 0zM369.1 437c18.7 18.7 49.1 18.7 67.9 0s18.7-49.1 0-67.9s-49.1-18.7-67.9 0s-18.7 49.1 0 67.9z"/></svg></span>
+                            </div>
+                        </div>
+                    </form>
+                    <div id="mdbook-searchresults-outer" class="searchresults-outer hidden">
+                        <div id="mdbook-searchresults-header" class="searchresults-header"></div>
+                        <ul id="mdbook-searchresults">
+                        </ul>
+                    </div>
+                </div>
+
+                <!-- Apply ARIA attributes after the sidebar and the sidebar toggle button are added to the DOM -->
+                <script>
+                    document.getElementById('mdbook-sidebar-toggle').setAttribute('aria-expanded', sidebar === 'visible');
+                    document.getElementById('mdbook-sidebar').setAttribute('aria-hidden', sidebar !== 'visible');
+                    Array.from(document.querySelectorAll('#mdbook-sidebar a')).forEach(function(link) {
+                        link.setAttribute('tabIndex', sidebar === 'visible' ? 0 : -1);
+                    });
+                </script>
+
+                <div id="mdbook-content" class="content">
+                    <main>
+                        <h1 id="2026-04-05-range-filter从-grf-得到启发但不照搬-grf"><a class="header" href="#2026-04-05-range-filter从-grf-得到启发但不照搬-grf">2026-04-05 Range Filter：从 GRF 得到启发，但不照搬 GRF</a></h1>
+<blockquote>
+<p>状态：当前 NoKV 单机引擎读路径优化的设计说明。本文档解释我们为什么要做 <code>range filter</code>、从 GRF 论文里具体借了什么、为什么没有直接实现 full GRF，以及当前方案在 NoKV 里的边界和收益。</p>
+</blockquote>
+<h2 id="导读"><a class="header" href="#导读">导读</a></h2>
+<ul>
+<li>🧭 主题：NoKV 为什么需要 <code>range filter</code>，以及为什么它是一个更保守的 GRF-inspired 设计。</li>
+<li>🧱 核心对象：LSM level、table span、block range、point lookup、bounded scan。</li>
+<li>🔁 调用链：<code>先裁剪候选表 -&gt; 再裁剪表内 block 范围 -&gt; 最后进入真正的 table/block probe</code>。</li>
+<li>📚 参考对象：GRF、Bloom Filter、传统 LSM non-overlap level pruning。</li>
+</ul>
+<h2 id="1-为什么要做这件事"><a class="header" href="#1-为什么要做这件事">1. 为什么要做这件事</a></h2>
+<p>NoKV 当前的单机引擎，已经有比较完整的：</p>
+<ul>
+<li>memtable</li>
+<li>WAL</li>
+<li>leveled compaction</li>
+<li>ingest buffer</li>
+<li>block/index cache</li>
+</ul>
+<p>但只做到这里，还不够。</p>
+<p>在读路径上，LSM 系统经常会浪费大量时间在两个问题上：</p>
+<ol>
+<li>哪些 SST 根本不值得看</li>
+<li>某个 SST 里，哪些 block 根本不值得扫</li>
+</ol>
+<p>这在下面几类场景里尤其明显：</p>
+<ul>
+<li>point miss</li>
+<li>point hit，但 level 里表很多</li>
+<li>很窄的 bounded scan</li>
+<li>读偏 workload 下的大量短读</li>
+</ul>
+<p>如果不做额外裁剪，系统即使最终只需要访问一个很小的 key range，也可能先付出很多无效的 table probe、index decode 和 block 边界判断成本。</p>
+<p>所以 <code>range filter</code> 的目标从一开始就不是“做一个更聪明的 filter”，而是非常务实地回答：</p>
+<blockquote>
+<p>在不改变恢复语义、不增加新的 durable 元数据、不过度绑定 compaction 策略的前提下，能不能把这部分无效 probe 明显砍掉？</p>
+</blockquote>
+<h2 id="2-我们从-grf-真正借了什么"><a class="header" href="#2-我们从-grf-真正借了什么">2. 我们从 GRF 真正借了什么</a></h2>
+<p>GRF 论文给我们的启发，不是“照着实现一套全局编码结构”，而是下面三个更本质的判断：</p>
+<ol>
+<li>读路径里真正贵的，很多时候不是最终访问那一个 block，而是前面的候选集筛选成本</li>
+<li>只要 pruning 足够早，哪怕不是最强版本，也能拿到可观收益</li>
+<li>这种 pruning 如果要工程上可落地，就必须把 correctness 放在第一位，宁可保守，也不能误剪</li>
+</ol>
+<p>可以把这件事简单理解成：</p>
+<pre class="mermaid">flowchart LR
+    Query["读请求"] --&gt; Naive["逐层找表\n逐表看范围\n逐表进 block"]
+    Query --&gt; RF["先做范围裁剪\n再进真正 probe"]
+</pre>
+
+<p>GRF 告诉我们的，是“前置裁剪值得认真做”；但它并没有强迫我们必须把整篇论文原样搬进 NoKV。</p>
+<h2 id="3-为什么没有直接实现-full-grf"><a class="header" href="#3-为什么没有直接实现-full-grf">3. 为什么没有直接实现 full GRF</a></h2>
+<p>如果照论文完整实现，我们理论上可以得到更强的全局 pruning 能力。但这会把当前 NoKV 拉进另一类复杂度里：</p>
+<ol>
+<li>要引入更强的全局 filter 元数据</li>
+<li>要把 filter 生命周期更紧地绑定到 compaction shape</li>
+<li>要考虑 version / snapshot / rebuild 的额外维护成本</li>
+<li>要决定这些元数据是内存态、持久态，还是两者混合</li>
+</ol>
+<p>而 NoKV 当前并不需要为了一个读路径优化，把整个恢复和元数据系统一起复杂化。</p>
+<p>更具体地说，当前 NoKV 还在几个更基础的点上持续演进：</p>
+<ul>
+<li>L0 overlap 形态</li>
+<li>compaction 债务控制</li>
+<li>ingest buffer 与 main level 的关系</li>
+<li>cache / block load / iterator 热路径</li>
+</ul>
+<p>在这个阶段直接做 full GRF，风险很高：</p>
+<ul>
+<li>容易把 filter 绑到还没完全稳定的 LSM shape 上</li>
+<li>容易新增一层持久化和 rebuild 责任</li>
+<li>容易让读路径优化反过来主导 compaction 设计</li>
+</ul>
+<p>这不是我们想要的。</p>
+<p>所以 NoKV 当前的取舍是：</p>
+<blockquote>
+<p>先拿 GRF 最值得的那部分收益，也就是“更早做范围裁剪”；<br>但不为此引入新的恢复责任和复杂持久化语义。</p>
+</blockquote>
+<h2 id="4-当前-nokv-的设计边界"><a class="header" href="#4-当前-nokv-的设计边界">4. 当前 NoKV 的设计边界</a></h2>
+<p>当前 <code>range filter</code> 的边界非常明确：</p>
+<ul>
+<li><code>in-memory</code></li>
+<li><code>advisory</code></li>
+<li><code>correctness-first</code></li>
+<li><code>table-level pruning + table-internal block-range pruning</code></li>
+</ul>
+<p>它不是：</p>
+<ul>
+<li>全局 authoritative filter</li>
+<li>persisted metadata</li>
+<li>full shape encoding</li>
+<li>compaction policy controller</li>
+</ul>
+<p>也就是说，它从一开始就不是“真相源”，而只是一个更聪明的读路径裁剪层。</p>
+<h2 id="5-我们最终采用的结构"><a class="header" href="#5-我们最终采用的结构">5. 我们最终采用的结构</a></h2>
+<p>当前设计可以概括成两段式裁剪：</p>
+<h3 id="第一段先裁剪表"><a class="header" href="#第一段先裁剪表">第一段：先裁剪表</a></h3>
+<p>对每个 level，我们维护一组表的 key span。</p>
+<p>对于 non-overlap level：</p>
+<ul>
+<li>可以更激进地缩小候选表范围</li>
+<li>point lookup 往往会落到极少量候选表，很多时候就是一个</li>
+</ul>
+<p>对于 overlap level 或过小 level：</p>
+<ul>
+<li>走更保守的策略</li>
+<li>不强求 filter 一定生效</li>
+</ul>
+<h3 id="第二段再裁剪表内-block-范围"><a class="header" href="#第二段再裁剪表内-block-范围">第二段：再裁剪表内 block 范围</a></h3>
+<p>当某张表已经成为候选之后，我们并不直接无脑扫整张表，而是继续利用 table index 里的 block base key 信息，把真正需要进入的 block 范围缩窄。</p>
+<p>整体形状如下：</p>
+<pre class="mermaid">flowchart TD
+    Q["Point Lookup / Narrow Scan"] --&gt; L["按 level 选择候选表"]
+    L --&gt; T["range filter 裁剪 table span"]
+    T --&gt; B["在候选表内裁剪 block range"]
+    B --&gt; P["真正进入 table/block probe"]
+</pre>
+
+<p>这套结构很务实：</p>
+<ul>
+<li>第一段解决“这张表要不要看”</li>
+<li>第二段解决“这张表里哪些 block 要看”</li>
+</ul>
+<p>它没有试图一次性解决所有问题，但已经覆盖了当前最值钱的两层裁剪。</p>
+<h2 id="6-为什么这个设计更适合-nokv-当前阶段"><a class="header" href="#6-为什么这个设计更适合-nokv-当前阶段">6. 为什么这个设计更适合 NoKV 当前阶段</a></h2>
+<h3 id="61-不新增-durable-负担"><a class="header" href="#61-不新增-durable-负担">6.1 不新增 durable 负担</a></h3>
+<p>这是最重要的一点。</p>
+<p>当前 <code>range filter</code> 不需要：</p>
+<ul>
+<li>新 manifest 语义</li>
+<li>新 recovery 路径</li>
+<li>新 snapshot/install 负担</li>
+</ul>
+<p>表集合一旦变化，filter 就在现有 level ownership 边界内重建。这样读路径优化不会污染恢复模型。</p>
+<h3 id="62-对现有-lsm-结构侵入很小"><a class="header" href="#62-对现有-lsm-结构侵入很小">6.2 对现有 LSM 结构侵入很小</a></h3>
+<p>NoKV 已经有自己的：</p>
+<ul>
+<li>leveled compaction</li>
+<li>ingest buffer</li>
+<li>table install / replace</li>
+</ul>
+<p><code>range filter</code> 只依赖“当前 level 上有哪些表、它们的范围是什么”，而不要求系统先具备更强的 run ID、shape encoding 或跨版本索引。</p>
+<h3 id="63-correctness-很容易讲清楚"><a class="header" href="#63-correctness-很容易讲清楚">6.3 correctness 很容易讲清楚</a></h3>
+<p>我们现在坚持一个简单规则：</p>
+<blockquote>
+<p>只要不确定，就 fallback。</p>
+</blockquote>
+<p>也就是：</p>
+<ul>
+<li>overlap 时保守</li>
+<li>level 太小时保守</li>
+<li>算不准时保守</li>
+<li>永远不能 false-negative prune</li>
+</ul>
+<p>这条规则让 <code>range filter</code> 在工程上非常安全。</p>
+<h2 id="7-和-bloom-filter-的关系"><a class="header" href="#7-和-bloom-filter-的关系">7. 和 Bloom Filter 的关系</a></h2>
+<p>Bloom Filter 解决的问题是：</p>
+<ul>
+<li>这张表里大概率有没有这个 key</li>
+</ul>
+<p><code>range filter</code> 解决的问题是：</p>
+<ul>
+<li>这张表值不值得先去看</li>
+<li>这张表里哪些 block 值不值得先去碰</li>
+</ul>
+<p>两者不是替代关系，而是不同层次的裁剪。</p>
+<p>可以粗略理解成：</p>
+<pre class="mermaid">flowchart LR
+    Query["读请求"] --&gt; RF["Range Filter\n先裁剪候选表和 block 范围"]
+    RF --&gt; BF["Bloom Filter\n判断候选表是否可能命中"]
+    BF --&gt; IO["真正访问 block / value"]
+</pre>
+
+<p><code>range filter</code> 更像“读路径计划层”的 pruning，Bloom 更像“单表内部 membership 层”的 pruning。</p>
+<h2 id="8-这个设计实际带来了什么收益"><a class="header" href="#8-这个设计实际带来了什么收益">8. 这个设计实际带来了什么收益</a></h2>
+<p>当前收益最明确的场景有：</p>
+<ul>
+<li>point miss</li>
+<li>point hit on many-table non-overlap levels</li>
+<li>narrow bounded scan</li>
+<li>读偏 workload</li>
+</ul>
+<p>它不会自动把所有 workload 都变快。</p>
+<p>特别是这些场景，收益没有那么直接：</p>
+<ul>
+<li>L0 overlap 很重时</li>
+<li>scan 很长时</li>
+<li>block load 或 cache miss 才是主要成本时</li>
+<li>mixed workload 下 compaction debt 已经成为主瓶颈时</li>
+</ul>
+<p>这也是为什么我们现在对它的定位很克制：</p>
+<blockquote>
+<p>它是一个有效的 read-path pruning 层，<br>不是整个读路径性能的唯一答案。</p>
+</blockquote>
+<h2 id="9-设计理念"><a class="header" href="#9-设计理念">9. 设计理念</a></h2>
+<p>这次 <code>range filter</code> 设计里，最重要的理念有三条。</p>
+<h3 id="91-借论文的结构判断不照搬论文的全部机制"><a class="header" href="#91-借论文的结构判断不照搬论文的全部机制">9.1 借论文的结构判断，不照搬论文的全部机制</a></h3>
+<p>论文的价值在于指出一个方向，而不是强迫系统按论文的全部假设生长。</p>
+<h3 id="92-优先拿最便宜的早期收益"><a class="header" href="#92-优先拿最便宜的早期收益">9.2 优先拿“最便宜的早期收益”</a></h3>
+<p>相比一上来做 persisted global filter，先把：</p>
+<ul>
+<li>表级裁剪</li>
+<li>表内 block-range 裁剪</li>
+</ul>
+<p>做扎实，性价比更高。</p>
+<h3 id="93-读路径优化不能反向污染恢复和元数据设计"><a class="header" href="#93-读路径优化不能反向污染恢复和元数据设计">9.3 读路径优化不能反向污染恢复和元数据设计</a></h3>
+<p>这条对 NoKV 很重要。</p>
+<p>NoKV 现在的工程主线不是“某个 filter 多先进”，而是：</p>
+<ul>
+<li>单机引擎边界清楚</li>
+<li>恢复模型清楚</li>
+<li>从单机到分布式可连续演进</li>
+</ul>
+<p>所以任何优化，只要开始逼迫：</p>
+<ul>
+<li>manifest 变复杂</li>
+<li>compaction 被 filter 绑架</li>
+<li>recovery 多出新责任</li>
+</ul>
+<p>就要非常谨慎。</p>
+<h2 id="10-参考对象"><a class="header" href="#10-参考对象">10. 参考对象</a></h2>
+<ul>
+<li>GRF: A Global Range Filter for LSM-Trees with Shape Encoding</li>
+<li>Bloom Filter 在 LSM 中的传统用法</li>
+<li>NoKV 当前 leveled compaction + ingest buffer 的工程边界</li>
+</ul>
+<h2 id="11-这次记录了什么"><a class="header" href="#11-这次记录了什么">11. 这次记录了什么</a></h2>
+<p>这篇 note 不是在宣布一个全新 feature，而是在把当前 <code>range filter</code> 的设计边界正式写清楚：</p>
+<ul>
+<li>灵感来自 GRF</li>
+<li>但当前实现不是 full GRF</li>
+<li>当前是更保守、correctness-first、工程上更稳的 pruning 方案</li>
+</ul>
+<h2 id="12-还没解决什么"><a class="header" href="#12-还没解决什么">12. 还没解决什么</a></h2>
+<p>当前还没解决的点也很明确：</p>
+<ol>
+<li><code>L0</code> overlap heavy 场景下，裁剪能力仍然保守</li>
+<li>还没有 persisted / global range filter</li>
+<li>还没有更强的 shape-aware pruning</li>
+<li>读路径的剩余成本仍然可能来自：
+<ul>
+<li>block load</li>
+<li>cache miss</li>
+<li>iterator 组装</li>
+<li>compaction debt</li>
+</ul>
+</li>
+</ol>
+<p>所以这篇文档的结论不是“已经做完了”，而是：</p>
+<blockquote>
+<p>当前版本已经拿到了最稳妥的一段收益，<br>但仍然给后续更强的 range-aware 设计保留了空间。</p>
+</blockquote>
+
+                    </main>
+
+                    <nav class="nav-wrapper" aria-label="Page navigation">
+                        <!-- Mobile navigation buttons -->
+                            <a rel="prev" href="../notes/2026-04-03-delos-lite-metadata-root-roadmap.html" class="mobile-nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                                <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M41.4 233.4c-12.5 12.5-12.5 32.8 0 45.3l160 160c12.5 12.5 32.8 12.5 45.3 0s12.5-32.8 0-45.3L109.3 256 246.6 118.6c12.5-12.5 12.5-32.8 0-45.3s-32.8-12.5-45.3 0l-160 160z"/></svg></span>
+                            </a>
+
+                            <a rel="next prefetch" href="../notes/2026-04-12-coordinator-meta-separation.html" class="mobile-nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                                <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M278.6 233.4c12.5 12.5 12.5 32.8 0 45.3l-160 160c-12.5 12.5-32.8 12.5-45.3 0s-12.5-32.8 0-45.3L210.7 256 73.4 118.6c-12.5-12.5-12.5-32.8 0-45.3s32.8-12.5 45.3 0l160 160z"/></svg></span>
+                            </a>
+
+                        <div style="clear: both"></div>
+                    </nav>
+                </div>
+            </div>
+
+            <nav class="nav-wide-wrapper" aria-label="Page navigation">
+                    <a rel="prev" href="../notes/2026-04-03-delos-lite-metadata-root-roadmap.html" class="nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                        <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M41.4 233.4c-12.5 12.5-12.5 32.8 0 45.3l160 160c12.5 12.5 32.8 12.5 45.3 0s12.5-32.8 0-45.3L109.3 256 246.6 118.6c12.5-12.5 12.5-32.8 0-45.3s-32.8-12.5-45.3 0l-160 160z"/></svg></span>
+                    </a>
+
+                    <a rel="next prefetch" href="../notes/2026-04-12-coordinator-meta-separation.html" class="nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                        <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M278.6 233.4c12.5 12.5 12.5 32.8 0 45.3l-160 160c-12.5 12.5-32.8 12.5-45.3 0s-12.5-32.8 0-45.3L210.7 256 73.4 118.6c-12.5-12.5-12.5-32.8 0-45.3s32.8-12.5 45.3 0l160 160z"/></svg></span>
+                    </a>
+            </nav>
+
+        </div>
+
+        <template id=fa-eye><span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 576 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M288 32c-80.8 0-145.5 36.8-192.6 80.6C48.6 156 17.3 208 2.5 243.7c-3.3 7.9-3.3 16.7 0 24.6C17.3 304 48.6 356 95.4 399.4C142.5 443.2 207.2 480 288 480s145.5-36.8 192.6-80.6c46.8-43.5 78.1-95.4 93-131.1c3.3-7.9 3.3-16.7 0-24.6c-14.9-35.7-46.2-87.7-93-131.1C433.5 68.8 368.8 32 288 32zM432 256c0 79.5-64.5 144-144 144s-144-64.5-144-144s64.5-144 144-144s144 64.5 144 144zM288 192c0 35.3-28.7 64-64 64c-11.5 0-22.3-3-31.6-8.4c-.2 2.8-.4 5.5-.4 8.4c0 53 43 96 96 96s96-43 96-96s-43-96-96-96c-2.8 0-5.6 .1-8.4 .4c5.3 9.3 8.4 20.1 8.4 31.6z"/></svg></span></template>
+        <template id=fa-eye-slash><span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M38.8 5.1C28.4-3.1 13.3-1.2 5.1 9.2S-1.2 34.7 9.2 42.9l592 464c10.4 8.2 25.5 6.3 33.7-4.1s6.3-25.5-4.1-33.7L525.6 386.7c39.6-40.6 66.4-86.1 79.9-118.4c3.3-7.9 3.3-16.7 0-24.6c-14.9-35.7-46.2-87.7-93-131.1C465.5 68.8 400.8 32 320 32c-68.2 0-125 26.3-169.3 60.8L38.8 5.1zM223.1 149.5C248.6 126.2 282.7 112 320 112c79.5 0 144 64.5 144 144c0 24.9-6.3 48.3-17.4 68.7L408 294.5c5.2-11.8 8-24.8 8-38.5c0-53-43-96-96-96c-2.8 0-5.6 .1-8.4 .4c5.3 9.3 8.4 20.1 8.4 31.6c0 10.2-2.4 19.8-6.6 28.3l-90.3-70.8zm223.1 298L373 389.9c-16.4 6.5-34.3 10.1-53 10.1c-79.5 0-144-64.5-144-144c0-6.9 .5-13.6 1.4-20.2L83.1 161.5C60.3 191.2 44 220.8 34.5 243.7c-3.3 7.9-3.3 16.7 0 24.6c14.9 35.7 46.2 87.7 93 131.1C174.5 443.2 239.2 480 320 480c47.8 0 89.9-12.9 126.2-32.5z"/></svg></span></template>
+        <template id=fa-copy><span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M502.6 70.63l-61.25-61.25C435.4 3.371 427.2 0 418.7 0H255.1c-35.35 0-64 28.66-64 64l.0195 256C192 355.4 220.7 384 256 384h192c35.2 0 64-28.8 64-64V93.25C512 84.77 508.6 76.63 502.6 70.63zM464 320c0 8.836-7.164 16-16 16H255.1c-8.838 0-16-7.164-16-16L239.1 64.13c0-8.836 7.164-16 16-16h128L384 96c0 17.67 14.33 32 32 32h47.1V320zM272 448c0 8.836-7.164 16-16 16H63.1c-8.838 0-16-7.164-16-16L47.98 192.1c0-8.836 7.164-16 16-16H160V128H63.99c-35.35 0-64 28.65-64 64l.0098 256C.002 483.3 28.66 512 64 512h192c35.2 0 64-28.8 64-64v-32h-47.1L272 448z"/></svg></span></template>
+        <template id=fa-play><span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 384 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M73 39c-14.8-9.1-33.4-9.4-48.5-.9S0 62.6 0 80V432c0 17.4 9.4 33.4 24.5 41.9s33.7 8.1 48.5-.9L361 297c14.3-8.7 23-24.2 23-41s-8.7-32.2-23-41L73 39z"/></svg></span></template>
+        <template id=fa-clock-rotate-left><span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M75 75L41 41C25.9 25.9 0 36.6 0 57.9V168c0 13.3 10.7 24 24 24H134.1c21.4 0 32.1-25.9 17-41l-30.8-30.8C155 85.5 203 64 256 64c106 0 192 86 192 192s-86 192-192 192c-40.8 0-78.6-12.7-109.7-34.4c-14.5-10.1-34.4-6.6-44.6 7.9s-6.6 34.4 7.9 44.6C151.2 495 201.7 512 256 512c141.4 0 256-114.6 256-256S397.4 0 256 0C185.3 0 121.3 28.7 75 75zm181 53c-13.3 0-24 10.7-24 24V256c0 6.4 2.5 12.5 7 17l72 72c9.4 9.4 24.6 9.4 33.9 0s9.4-24.6 0-33.9l-65-65V152c0-13.3-10.7-24-24-24z"/></svg></span></template>
+
+
+
+        <script>
+            window.playground_copyable = true;
+        </script>
+
+
+        <script src="../elasticlunr-ef4e11c1.min.js"></script>
+        <script src="../mark-09e88c2c.min.js"></script>
+        <script src="../searcher-c2a407aa.js"></script>
+
+        <script src="../clipboard-1626706a.min.js"></script>
+        <script src="../highlight-abc7f01d.js"></script>
+        <script src="../book-a0b12cfe.js"></script>
+
+        <!-- Custom JS scripts -->
+        <script src="../docs/custom-732fa610.js"></script>
+        <script src="../docs/mermaid-init-8a66ee6c.js"></script>
+
+
+
+    </div>
+    </body>
+</html>

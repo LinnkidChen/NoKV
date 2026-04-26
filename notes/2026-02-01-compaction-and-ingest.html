@@ -1,0 +1,446 @@
+<!DOCTYPE HTML>
+<html lang="en" class="light sidebar-visible" dir="ltr">
+    <head>
+        <!-- Book generated using mdBook -->
+        <meta charset="UTF-8">
+        <title>2026-02-01 Compaction 与 Ingest - NoKV Docs</title>
+
+
+        <!-- Custom HTML head -->
+
+        <meta name="description" content="NoKV design, architecture, migration, and testing documentation.">
+        <meta name="viewport" content="width=device-width, initial-scale=1">
+        <meta name="theme-color" content="#ffffff">
+
+        <link rel="icon" href="../favicon-de23e50b.svg">
+        <link rel="shortcut icon" href="../favicon-8114d1fc.png">
+        <link rel="stylesheet" href="../css/variables-8adf115d.css">
+        <link rel="stylesheet" href="../css/general-2459343d.css">
+        <link rel="stylesheet" href="../css/chrome-ae938929.css">
+        <link rel="stylesheet" href="../css/print-9e4910d8.css" media="print">
+
+        <!-- Fonts -->
+        <link rel="stylesheet" href="../fonts/fonts-9644e21d.css">
+
+        <!-- Highlight.js Stylesheets -->
+        <link rel="stylesheet" id="mdbook-highlight-css" href="../highlight-493f70e1.css">
+        <link rel="stylesheet" id="mdbook-tomorrow-night-css" href="../tomorrow-night-4c0ae647.css">
+        <link rel="stylesheet" id="mdbook-ayu-highlight-css" href="../ayu-highlight-3fdfc3ac.css">
+
+        <!-- Custom theme stylesheets -->
+        <link rel="stylesheet" href="../docs/custom-a69f6233.css">
+
+
+        <!-- Provide site root and default themes to javascript -->
+        <script>
+            const path_to_root = "../";
+            const default_light_theme = "light";
+            const default_dark_theme = "navy";
+            window.path_to_searchindex_js = "../searchindex-587b1194.js";
+        </script>
+        <!-- Start loading toc.js asap -->
+        <script src="../toc-2018305d.js"></script>
+    </head>
+    <body>
+    <div id="mdbook-help-container">
+        <div id="mdbook-help-popup">
+            <h2 class="mdbook-help-title">Keyboard shortcuts</h2>
+            <div>
+                <p>Press <kbd>←</kbd> or <kbd>→</kbd> to navigate between chapters</p>
+                <p>Press <kbd>S</kbd> or <kbd>/</kbd> to search in the book</p>
+                <p>Press <kbd>?</kbd> to show this help</p>
+                <p>Press <kbd>Esc</kbd> to hide this help</p>
+            </div>
+        </div>
+    </div>
+    <div id="mdbook-body-container">
+        <!-- Work around some values being stored in localStorage wrapped in quotes -->
+        <script>
+            try {
+                let theme = localStorage.getItem('mdbook-theme');
+                let sidebar = localStorage.getItem('mdbook-sidebar');
+
+                if (theme.startsWith('"') && theme.endsWith('"')) {
+                    localStorage.setItem('mdbook-theme', theme.slice(1, theme.length - 1));
+                }
+
+                if (sidebar.startsWith('"') && sidebar.endsWith('"')) {
+                    localStorage.setItem('mdbook-sidebar', sidebar.slice(1, sidebar.length - 1));
+                }
+            } catch (e) { }
+        </script>
+
+        <!-- Set the theme before any content is loaded, prevents flash -->
+        <script>
+            const default_theme = window.matchMedia("(prefers-color-scheme: dark)").matches ? default_dark_theme : default_light_theme;
+            let theme;
+            try { theme = localStorage.getItem('mdbook-theme'); } catch(e) { }
+            if (theme === null || theme === undefined) { theme = default_theme; }
+            const html = document.documentElement;
+            html.classList.remove('light')
+            html.classList.add(theme);
+            html.classList.add("js");
+        </script>
+
+        <input type="checkbox" id="mdbook-sidebar-toggle-anchor" class="hidden">
+
+        <!-- Hide / unhide sidebar before it is displayed -->
+        <script>
+            let sidebar = null;
+            const sidebar_toggle = document.getElementById("mdbook-sidebar-toggle-anchor");
+            if (document.body.clientWidth >= 1080) {
+                try { sidebar = localStorage.getItem('mdbook-sidebar'); } catch(e) { }
+                sidebar = sidebar || 'visible';
+            } else {
+                sidebar = 'hidden';
+                sidebar_toggle.checked = false;
+            }
+            if (sidebar === 'visible') {
+                sidebar_toggle.checked = true;
+            } else {
+                html.classList.remove('sidebar-visible');
+            }
+        </script>
+
+        <nav id="mdbook-sidebar" class="sidebar" aria-label="Table of contents">
+            <!-- populated by js -->
+            <mdbook-sidebar-scrollbox class="sidebar-scrollbox"></mdbook-sidebar-scrollbox>
+            <noscript>
+                <iframe class="sidebar-iframe-outer" src="../toc.html"></iframe>
+            </noscript>
+            <div id="mdbook-sidebar-resize-handle" class="sidebar-resize-handle">
+                <div class="sidebar-resize-indicator"></div>
+            </div>
+        </nav>
+
+        <div id="mdbook-page-wrapper" class="page-wrapper">
+
+            <div class="page">
+                <div id="mdbook-menu-bar-hover-placeholder"></div>
+                <div id="mdbook-menu-bar" class="menu-bar sticky">
+                    <div class="left-buttons">
+                        <label id="mdbook-sidebar-toggle" class="icon-button" for="mdbook-sidebar-toggle-anchor" title="Toggle Table of Contents" aria-label="Toggle Table of Contents" aria-controls="mdbook-sidebar">
+                            <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M0 96C0 78.3 14.3 64 32 64H416c17.7 0 32 14.3 32 32s-14.3 32-32 32H32C14.3 128 0 113.7 0 96zM0 256c0-17.7 14.3-32 32-32H416c17.7 0 32 14.3 32 32s-14.3 32-32 32H32c-17.7 0-32-14.3-32-32zM448 416c0 17.7-14.3 32-32 32H32c-17.7 0-32-14.3-32-32s14.3-32 32-32H416c17.7 0 32 14.3 32 32z"/></svg></span>
+                        </label>
+                        <button id="mdbook-theme-toggle" class="icon-button" type="button" title="Change theme" aria-label="Change theme" aria-haspopup="true" aria-expanded="false" aria-controls="mdbook-theme-list">
+                            <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 576 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M371.3 367.1c27.3-3.9 51.9-19.4 67.2-42.9L600.2 74.1c12.6-19.5 9.4-45.3-7.6-61.2S549.7-4.4 531.1 9.6L294.4 187.2c-24 18-38.2 46.1-38.4 76.1L371.3 367.1zm-19.6 25.4l-116-104.4C175.9 290.3 128 339.6 128 400c0 3.9 .2 7.8 .6 11.6c1.8 17.5-10.2 36.4-27.8 36.4H96c-17.7 0-32 14.3-32 32s14.3 32 32 32H240c61.9 0 112-50.1 112-112c0-2.5-.1-5-.2-7.5z"/></svg></span>
+                        </button>
+                        <ul id="mdbook-theme-list" class="theme-popup" aria-label="Themes" role="menu">
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-default_theme">Auto</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-light">Light</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-rust">Rust</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-coal">Coal</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-navy">Navy</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-ayu">Ayu</button></li>
+                        </ul>
+                        <button id="mdbook-search-toggle" class="icon-button" type="button" title="Search (`/`)" aria-label="Toggle Searchbar" aria-expanded="false" aria-keyshortcuts="/ s" aria-controls="mdbook-searchbar">
+                            <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M416 208c0 45.9-14.9 88.3-40 122.7L502.6 457.4c12.5 12.5 12.5 32.8 0 45.3s-32.8 12.5-45.3 0L330.7 376c-34.4 25.2-76.8 40-122.7 40C93.1 416 0 322.9 0 208S93.1 0 208 0S416 93.1 416 208zM208 352c79.5 0 144-64.5 144-144s-64.5-144-144-144S64 128.5 64 208s64.5 144 144 144z"/></svg></span>
+                        </button>
+                    </div>
+
+                    <h1 class="menu-title">NoKV Docs</h1>
+
+                    <div class="right-buttons">
+                        <a href="../print.html" title="Print this book" aria-label="Print this book">
+                            <span class=fa-svg id="print-button"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M128 0C92.7 0 64 28.7 64 64v96h64V64H354.7L384 93.3V160h64V93.3c0-17-6.7-33.3-18.7-45.3L400 18.7C388 6.7 371.7 0 354.7 0H128zM384 352v32 64H128V384 368 352H384zm64 32h32c17.7 0 32-14.3 32-32V256c0-35.3-28.7-64-64-64H64c-35.3 0-64 28.7-64 64v96c0 17.7 14.3 32 32 32H64v64c0 35.3 28.7 64 64 64H384c35.3 0 64-28.7 64-64V384zm-16-88c-13.3 0-24-10.7-24-24s10.7-24 24-24s24 10.7 24 24s-10.7 24-24 24z"/></svg></span>
+                        </a>
+                        <a href="https://github.com/feichai0017/NoKV" title="Git repository" aria-label="Git repository">
+                            <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 496 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M165.9 397.4c0 2-2.3 3.6-5.2 3.6-3.3.3-5.6-1.3-5.6-3.6 0-2 2.3-3.6 5.2-3.6 3-.3 5.6 1.3 5.6 3.6zm-31.1-4.5c-.7 2 1.3 4.3 4.3 4.9 2.6 1 5.6 0 6.2-2s-1.3-4.3-4.3-5.2c-2.6-.7-5.5.3-6.2 2.3zm44.2-1.7c-2.9.7-4.9 2.6-4.6 4.9.3 2 2.9 3.3 5.9 2.6 2.9-.7 4.9-2.6 4.6-4.6-.3-1.9-3-3.2-5.9-2.9zM244.8 8C106.1 8 0 113.3 0 252c0 110.9 69.8 205.8 169.5 239.2 12.8 2.3 17.3-5.6 17.3-12.1 0-6.2-.3-40.4-.3-61.4 0 0-70 15-84.7-29.8 0 0-11.4-29.1-27.8-36.6 0 0-22.9-15.7 1.6-15.4 0 0 24.9 2 38.6 25.8 21.9 38.6 58.6 27.5 72.9 20.9 2.3-16 8.8-27.1 16-33.7-55.9-6.2-112.3-14.3-112.3-110.5 0-27.5 7.6-41.3 23.6-58.9-2.6-6.5-11.1-33.3 2.6-67.9 20.9-6.5 69 27 69 27 20-5.6 41.5-8.5 62.8-8.5s42.8 2.9 62.8 8.5c0 0 48.1-33.6 69-27 13.7 34.7 5.2 61.4 2.6 67.9 16 17.7 25.8 31.5 25.8 58.9 0 96.5-58.9 104.2-114.8 110.5 9.2 7.9 17 22.9 17 46.4 0 33.7-.3 75.4-.3 83.6 0 6.5 4.6 14.4 17.3 12.1C428.2 457.8 496 362.9 496 252 496 113.3 383.5 8 244.8 8zM97.2 352.9c-1.3 1-1 3.3.7 5.2 1.6 1.6 3.9 2.3 5.2 1 1.3-1 1-3.3-.7-5.2-1.6-1.6-3.9-2.3-5.2-1zm-10.8-8.1c-.7 1.3.3 2.9 2.3 3.9 1.6 1 3.6.7 4.3-.7.7-1.3-.3-2.9-2.3-3.9-2-.6-3.6-.3-4.3.7zm32.4 35.6c-1.6 1.3-1 4.3 1.3 6.2 2.3 2.3 5.2 2.6 6.5 1 1.3-1.3.7-4.3-1.3-6.2-2.2-2.3-5.2-2.6-6.5-1zm-11.4-14.7c-1.6 1-1.6 3.6 0 5.9 1.6 2.3 4.3 3.3 5.6 2.3 1.6-1.3 1.6-3.9 0-6.2-1.4-2.3-4-3.3-5.6-2z"/></svg></span>
+                        </a>
+
+                    </div>
+                </div>
+
+                <div id="mdbook-search-wrapper" class="hidden">
+                    <form id="mdbook-searchbar-outer" class="searchbar-outer">
+                        <div class="search-wrapper">
+                            <input type="search" id="mdbook-searchbar" name="searchbar" placeholder="Search this book ..." aria-controls="mdbook-searchresults-outer" aria-describedby="searchresults-header">
+                            <div class="spinner-wrapper">
+                                <span class=fa-svg id="fa-spin"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M304 48c0-26.5-21.5-48-48-48s-48 21.5-48 48s21.5 48 48 48s48-21.5 48-48zm0 416c0-26.5-21.5-48-48-48s-48 21.5-48 48s21.5 48 48 48s48-21.5 48-48zM48 304c26.5 0 48-21.5 48-48s-21.5-48-48-48s-48 21.5-48 48s21.5 48 48 48zm464-48c0-26.5-21.5-48-48-48s-48 21.5-48 48s21.5 48 48 48s48-21.5 48-48zM142.9 437c18.7-18.7 18.7-49.1 0-67.9s-49.1-18.7-67.9 0s-18.7 49.1 0 67.9s49.1 18.7 67.9 0zm0-294.2c18.7-18.7 18.7-49.1 0-67.9S93.7 56.2 75 75s-18.7 49.1 0 67.9s49.1 18.7 67.9 0zM369.1 437c18.7 18.7 49.1 18.7 67.9 0s18.7-49.1 0-67.9s-49.1-18.7-67.9 0s-18.7 49.1 0 67.9z"/></svg></span>
+                            </div>
+                        </div>
+                    </form>
+                    <div id="mdbook-searchresults-outer" class="searchresults-outer hidden">
+                        <div id="mdbook-searchresults-header" class="searchresults-header"></div>
+                        <ul id="mdbook-searchresults">
+                        </ul>
+                    </div>
+                </div>
+
+                <!-- Apply ARIA attributes after the sidebar and the sidebar toggle button are added to the DOM -->
+                <script>
+                    document.getElementById('mdbook-sidebar-toggle').setAttribute('aria-expanded', sidebar === 'visible');
+                    document.getElementById('mdbook-sidebar').setAttribute('aria-hidden', sidebar !== 'visible');
+                    Array.from(document.querySelectorAll('#mdbook-sidebar a')).forEach(function(link) {
+                        link.setAttribute('tabIndex', sidebar === 'visible' ? 0 : -1);
+                    });
+                </script>
+
+                <div id="mdbook-content" class="content">
+                    <main>
+                        <h1 id="2026-02-01-compaction-与-ingest-buffer-设计"><a class="header" href="#2026-02-01-compaction-与-ingest-buffer-设计">2026-02-01 Compaction 与 Ingest Buffer 设计</a></h1>
+<p>本文档深入解析 NoKV 的 <strong>Compaction（压缩）</strong> 机制与 <strong>Ingest Buffer（导入缓冲）</strong> 的协同设计。这是 NoKV 解决 LSM Tree 经典的“写停顿（Write Stall）”问题的核心武器，也是体现其工业级稳定性的关键设计。</p>
+<hr>
+<h2 id="1-设计理念拒绝写停顿"><a class="header" href="#1-设计理念拒绝写停顿">1. 设计理念：拒绝“写停顿”</a></h2>
+<p>在 LSM Tree 架构中，数据从 MemTable 刷入 L0 层。由于 L0 层的 SSTable 之间 Key 是重叠的，当 L0 文件数量达到上限（如 15 个）时，必须触发 L0 -&gt; L1 的 Compaction。</p>
+<ul>
+<li><strong>传统痛点</strong>：L0 -&gt; L1 的 Compaction 需要将 L0 文件与 L1 中所有重叠的文件读出，进行归并排序（Merge Sort），然后重写。这个过程涉及大量 IO 和 CPU，耗时较长。</li>
+<li><strong>后果</strong>：如果写入速度超过了 L0 -&gt; L1 的压缩速度，L0 就会被填满，系统被迫触发 <strong>Write Stall</strong>（限制甚至停止写入），导致严重的性能抖动。</li>
+</ul>
+<p><strong>NoKV 的哲学</strong>：</p>
+<blockquote>
+<p><strong>“先收下，再整理。”</strong>
+当 L0 拥堵时，不要阻塞写入去等待漫长的排序，而是先把 L0 的文件“甩”给下一层，让下一层暂时“保管”，等有空了再慢慢整理。</p>
+</blockquote>
+<hr>
+<h2 id="11-参考论文与工程对标"><a class="header" href="#11-参考论文与工程对标">1.1 参考论文与工程对标</a></h2>
+<p>以下论文/系统是 NoKV compaction 与 ingest buffer 设计的主要参考坐标（按主题分类）：</p>
+<ul>
+<li><strong>LSM 设计与调参理论</strong>：
+<ul>
+<li><a href="https://stratos.seas.harvard.edu/publications/monkey-optimal-navigable-key-value-store">Monkey (SIGMOD 2017)</a> —— 全局调参、Bloom 过滤器与合并策略的权衡模型。</li>
+<li><a href="https://stratos.seas.harvard.edu/publications/dostoevsky-better-space-time-trade-offs-lsm-tree-based-key-value-stores">Dostoevsky (SIGMOD 2018)</a> —— Lazy Leveling / 低合并成本的层级策略。</li>
+</ul>
+</li>
+<li><strong>写停顿与稳定性</strong>：
+<ul>
+<li><a href="https://dblp.uni-trier.de/rec/conf/sigmod/SearsR12.html">bLSM (SIGMOD 2012)</a> —— 强调写入吞吐稳定与 tail latency。</li>
+<li><a href="https://arxiv.org/abs/1906.09667">Performance Stability in LSM-based Storage Systems</a> —— compaction 抖动与写停顿成因分析。</li>
+</ul>
+</li>
+<li><strong>工程系统实践</strong>：
+<ul>
+<li><a href="https://github.com/facebook/rocksdb/wiki/Compaction">RocksDB Compaction (官方文档)</a> —— leveled/tiered/universal 与 L0 处理策略。</li>
+<li><a href="https://utsaslab.github.io/pebblesdb/">PebblesDB</a> —— 碎片化/分片思路降低写放大。</li>
+<li><a href="https://arxiv.org/abs/1807.04151">Co-KV</a> —— 把 compaction 视作核心瓶颈的系统研究。</li>
+</ul>
+</li>
+</ul>
+<hr>
+<h2 id="2-核心组件ingest-buffer"><a class="header" href="#2-核心组件ingest-buffer">2. 核心组件：Ingest Buffer</a></h2>
+<p>为了实现上述哲学，NoKV 为每一层（Level 1+）引入了一个特殊的结构：<strong>Ingest Buffer</strong>。</p>
+<h3 id="21-结构定义-lsmingestgo"><a class="header" href="#21-结构定义-lsmingestgo">2.1 结构定义 (<code>lsm/ingest.go</code>)</a></h3>
+<p>它不是一个简单的队列，而是一个<strong>分片化</strong>的容器：</p>
+<pre><code class="language-go">type ingestBuffer struct {
+    shards []ingestShard // 默认 4 个分片
+}
+
+type ingestShard struct {
+    tables    []*table   // 暂存在这里的 SSTable 列表
+    ranges    []tableRange // 对应的 Key 范围索引
+}
+</code></pre>
+<ul>
+<li><strong>分片 (Sharding)</strong>：根据 Key 的前缀将暂存的表分配到不同的 Shard。</li>
+<li><strong>并行性</strong>：这允许后台的多个 Compactor 线程并行地处理不同 Key 范围的积压数据。</li>
+</ul>
+<hr>
+<h2 id="3-交互逻辑救火与还债"><a class="header" href="#3-交互逻辑救火与还债">3. 交互逻辑：救火与还债</a></h2>
+<p>NoKV 的 Compaction 流程被设计为“快慢双轨”制。</p>
+<h3 id="31-快路径l0-溢出卸载-offloading"><a class="header" href="#31-快路径l0-溢出卸载-offloading">3.1 快路径：L0 溢出卸载 (Offloading)</a></h3>
+<p>这是应对 Write Stall 的“救火”机制。</p>
+<ul>
+<li><strong>触发</strong>：L0 文件数过多。</li>
+<li><strong>动作 (<code>moveToIngest</code>)</strong>：
+<ol>
+<li>不进行数据合并。</li>
+<li>直接将 L0 的 SSTable 文件从 L0 列表中移除。</li>
+<li>将这些文件加入到 L1 的 <code>Ingest Buffer</code> 中。</li>
+</ol>
+</li>
+<li><strong>代价</strong>：纯元数据操作，<strong>微秒级</strong>完成。</li>
+<li><strong>结果</strong>：L0 瞬间清空，写停顿解除。L1 暂时持有这些未排序的文件。</li>
+</ul>
+<pre class="mermaid">graph TD
+    subgraph Before_L0_Congested["Before: L0 Congested"]
+        L0["L0: 15 SSTables (Full)"]
+        L1["L1: Sorted SSTables"]
+    end
+
+    subgraph Action_Offload_Fast["Action: Offload (Fast)"]
+        Move["Move to Ingest"]
+    end
+
+    subgraph After_L0_Empty["After: L0 Empty"]
+        L0_New["L0: Empty"]
+        L1_New["L1: Sorted SSTables"]
+        L1_Ingest["L1 Ingest Buffer: 15 Unsorted Tables"]
+    end
+
+    L0 --&gt; Move --&gt; L1_Ingest
+</pre>
+
+<h3 id="32-慢路径后台异步归并-merge"><a class="header" href="#32-慢路径后台异步归并-merge">3.2 慢路径：后台异步归并 (Merge)</a></h3>
+<p>这是“还债”机制，确保存储结构的最终有序性。</p>
+<ul>
+<li><strong>触发</strong>：Compactor 发现某层的 <code>Ingest Buffer</code> 积压严重（<code>Score &gt; 1</code>）。</li>
+<li><strong>模式选择 (IngestMode)</strong>：
+<ul>
+<li><strong>IngestDrain</strong>：将 Ingest Shard 合并进 Main Tables，彻底清空缓冲。</li>
+<li><strong>IngestKeep</strong>：合并 Shard，但如果下游压力也大，可能会将输出结果继续保留在 Ingest Buffer 中（暂存结果），以避免写入放大的级联效应。</li>
+</ul>
+</li>
+<li><strong>动作 (<code>fillTablesIngestShard</code>)</strong>：
+<ol>
+<li>挑选一个积压最严重的 <code>Shard</code>。</li>
+<li>锁定该 Shard 和 L1 中与其 Key 范围重叠的 <code>Main Tables</code>。</li>
+<li>执行标准的归并排序。</li>
+<li>生成新的 <code>Main Tables</code>，清空该 Shard。</li>
+</ol>
+</li>
+</ul>
+<hr>
+<h2 id="4-读路径的权衡"><a class="header" href="#4-读路径的权衡">4. 读路径的权衡</a></h2>
+<p>这种设计本质上是 <strong>“空间换时间”</strong> 和 <strong>“读写权衡”</strong>。我们牺牲了一点点读性能，换取了极致的写稳定性。</p>
+<p><strong>查询流程 (<code>Get</code>)</strong>：</p>
+<ol>
+<li><strong>查 MemTable</strong>。</li>
+<li><strong>查 L0</strong>。</li>
+<li><strong>查 L1</strong>：
+<ul>
+<li><strong>先查 L1 Ingest Buffer</strong>：因为这里面是从 L0 刚“甩”下来的新数据，版本更新。
+<ul>
+<li>需要在 Shard 内进行二分查找（因为 buffer 内的表之间可能有重叠）。</li>
+</ul>
+</li>
+<li><strong>后查 L1 Main Tables</strong>：这是标准的有序数据，查找很快。</li>
+</ul>
+</li>
+<li><strong>查 L2…</strong></li>
+</ol>
+<hr>
+<h2 id="5-协同设计value-aware-compaction"><a class="header" href="#5-协同设计value-aware-compaction">5. 协同设计：Value-Aware Compaction</a></h2>
+<p>除了处理写抖动，Compaction 还承担了<strong>回收 VLog 空间</strong>的任务。</p>
+<ul>
+<li><strong>痛点</strong>：在 KV 分离架构中，LSM 里的删除只是写了一个 Tombstone，VLog 里的旧 Value 依然占着磁盘。</li>
+<li><strong>方案</strong>：
+<ul>
+<li><strong>Value Density (价值密度)</strong>：Compaction Picker 会计算每一层的 <code>TotalValueBytes / TotalSizeBytes</code>。</li>
+<li><strong>Discard Stats (失效统计)</strong>：虽然 VLog GC 依赖专门的 discard stats，但 Compaction 必须负责通过重写 SSTable 来丢弃那些指向无效 Value 的指针。</li>
+<li><strong>策略</strong>：Compaction 会优先选择 Value 密度异常（或者包含大量 Stale 数据）的层级进行压缩，主动触发指针清理。</li>
+</ul>
+</li>
+</ul>
+<h2 id="6-总结"><a class="header" href="#6-总结">6. 总结</a></h2>
+<p>NoKV 的 Compaction 和 Ingest Buffer 设计解决了一组复杂的工程矛盾：</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th style="text-align: left">问题</th><th style="text-align: left">传统方案</th><th style="text-align: left">NoKV 方案</th><th style="text-align: left">收益</th></tr>
+</thead>
+<tbody>
+<tr><td style="text-align: left"><strong>L0 拥堵</strong></td><td style="text-align: left">阻塞写入，强制合并</td><td style="text-align: left"><strong>L0 -&gt; Ingest Buffer</strong> (快速卸载)</td><td style="text-align: left"><strong>零写停顿 (Zero Write Stall)</strong></td></tr>
+<tr><td style="text-align: left"><strong>合并卡顿</strong></td><td style="text-align: left">单线程大合并</td><td style="text-align: left"><strong>Sharding + Subcompaction</strong></td><td style="text-align: left">并行处理，利用多核/SSD 优势</td></tr>
+<tr><td style="text-align: left"><strong>VLog 膨胀</strong></td><td style="text-align: left">被动等待</td><td style="text-align: left"><strong>Value-Aware Scoring</strong></td><td style="text-align: left">主动出击，加速空间回收</td></tr>
+</tbody>
+</table>
+</div>
+<p>这是一个非常成熟的工业级设计，它不仅关注“存得下”，更关注“写得稳”和“删得掉”。</p>
+<hr>
+<h2 id="7-与论文原始设计的关键对比我们做了哪些改动"><a class="header" href="#7-与论文原始设计的关键对比我们做了哪些改动">7. 与论文原始设计的关键对比（我们做了哪些改动）</a></h2>
+<h3 id="71-与-blsm--performance-stability-的对比"><a class="header" href="#71-与-blsm--performance-stability-的对比">7.1 与 bLSM / Performance Stability 的对比</a></h3>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th style="text-align: left">论文观点</th><th style="text-align: left">原文侧重点</th><th style="text-align: left">NoKV 改动</th><th style="text-align: left">实际影响</th></tr>
+</thead>
+<tbody>
+<tr><td style="text-align: left">写停顿主因是 L0 拥堵 + Compaction 过慢</td><td style="text-align: left">强调稳定吞吐</td><td style="text-align: left"><strong>Ingest Buffer + 快速卸载</strong></td><td style="text-align: left">写停顿几乎消失</td></tr>
+<tr><td style="text-align: left">需要把后台任务节奏“拉平”</td><td style="text-align: left">关注 tail latency</td><td style="text-align: left"><strong>分片 + 并行 compaction + 动态调度</strong></td><td style="text-align: left">把抖动压在后台</td></tr>
+</tbody>
+</table>
+</div>
+<h3 id="72-与-monkey--dostoevsky-的对比"><a class="header" href="#72-与-monkey--dostoevsky-的对比">7.2 与 Monkey / Dostoevsky 的对比</a></h3>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th style="text-align: left">论文观点</th><th style="text-align: left">原文侧重点</th><th style="text-align: left">NoKV 改动</th><th style="text-align: left">实际影响</th></tr>
+</thead>
+<tbody>
+<tr><td style="text-align: left">LSM 参数需全局权衡（读/写/空间）</td><td style="text-align: left">理论模型</td><td style="text-align: left"><strong>引入 ingest buffer 作为工程缓冲层</strong></td><td style="text-align: left">实际调参更稳定</td></tr>
+<tr><td style="text-align: left">Lazy leveling 降低合并成本</td><td style="text-align: left">减少写放大</td><td style="text-align: left"><strong>IngestKeep/Drain 模式</strong></td><td style="text-align: left">热点时延降低</td></tr>
+</tbody>
+</table>
+</div>
+<h3 id="73-与-rocksdb--pebblesdb-的对比"><a class="header" href="#73-与-rocksdb--pebblesdb-的对比">7.3 与 RocksDB / PebblesDB 的对比</a></h3>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th style="text-align: left">系统</th><th style="text-align: left">原始设计</th><th style="text-align: left">NoKV 改动</th><th style="text-align: left">说明</th></tr>
+</thead>
+<tbody>
+<tr><td style="text-align: left">RocksDB</td><td style="text-align: left">L0 → leveled，universal 作为可选</td><td style="text-align: left"><strong>引入每层 ingest 缓冲区</strong></td><td style="text-align: left">更适合 burst 场景</td></tr>
+<tr><td style="text-align: left">PebblesDB</td><td style="text-align: left">碎片化 LSM</td><td style="text-align: left"><strong>按前缀分片 shard</strong></td><td style="text-align: left">保持范围局部性</td></tr>
+</tbody>
+</table>
+</div>
+<h3 id="74-与论文原型不同的工程化点"><a class="header" href="#74-与论文原型不同的工程化点">7.4 与论文原型不同的工程化点</a></h3>
+<ul>
+<li><strong>分片并行</strong>：按 key 前缀 shard，使 ingest 与 compaction 可并行而不互相覆盖。</li>
+<li><strong>IngestKeep / IngestDrain</strong>：把“快速止血”和“慢速还债”拆成两条路径。</li>
+<li><strong>Value-aware compaction</strong>：与 VLog discard stats 联动，把无效指针尽快清掉。</li>
+<li><strong>调度基于 backlog/score</strong>：优先处理最急的 shard，而非随机挑选。</li>
+</ul>
+<blockquote>
+<p>简单总结：论文解决的是“理论最优解”，NoKV 做的是“工程稳定性 + 可运维”。</p>
+</blockquote>
+
+                    </main>
+
+                    <nav class="nav-wrapper" aria-label="Page navigation">
+                        <!-- Mobile navigation buttons -->
+                            <a rel="prev" href="../notes/2026-01-16-thermos-design.html" class="mobile-nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                                <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M41.4 233.4c-12.5 12.5-12.5 32.8 0 45.3l160 160c12.5 12.5 32.8 12.5 45.3 0s12.5-32.8 0-45.3L109.3 256 246.6 118.6c12.5-12.5 12.5-32.8 0-45.3s-32.8-12.5-45.3 0l-160 160z"/></svg></span>
+                            </a>
+
+                            <a rel="next prefetch" href="../notes/2026-02-05-vlog-design-and-gc.html" class="mobile-nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                                <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M278.6 233.4c12.5 12.5 12.5 32.8 0 45.3l-160 160c-12.5 12.5-32.8 12.5-45.3 0s-12.5-32.8 0-45.3L210.7 256 73.4 118.6c-12.5-12.5-12.5-32.8 0-45.3s32.8-12.5 45.3 0l160 160z"/></svg></span>
+                            </a>
+
+                        <div style="clear: both"></div>
+                    </nav>
+                </div>
+            </div>
+
+            <nav class="nav-wide-wrapper" aria-label="Page navigation">
+                    <a rel="prev" href="../notes/2026-01-16-thermos-design.html" class="nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                        <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M41.4 233.4c-12.5 12.5-12.5 32.8 0 45.3l160 160c12.5 12.5 32.8 12.5 45.3 0s12.5-32.8 0-45.3L109.3 256 246.6 118.6c12.5-12.5 12.5-32.8 0-45.3s-32.8-12.5-45.3 0l-160 160z"/></svg></span>
+                    </a>
+
+                    <a rel="next prefetch" href="../notes/2026-02-05-vlog-design-and-gc.html" class="nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                        <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M278.6 233.4c12.5 12.5 12.5 32.8 0 45.3l-160 160c-12.5 12.5-32.8 12.5-45.3 0s-12.5-32.8 0-45.3L210.7 256 73.4 118.6c-12.5-12.5-12.5-32.8 0-45.3s32.8-12.5 45.3 0l160 160z"/></svg></span>
+                    </a>
+            </nav>
+
+        </div>
+
+        <template id=fa-eye><span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 576 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M288 32c-80.8 0-145.5 36.8-192.6 80.6C48.6 156 17.3 208 2.5 243.7c-3.3 7.9-3.3 16.7 0 24.6C17.3 304 48.6 356 95.4 399.4C142.5 443.2 207.2 480 288 480s145.5-36.8 192.6-80.6c46.8-43.5 78.1-95.4 93-131.1c3.3-7.9 3.3-16.7 0-24.6c-14.9-35.7-46.2-87.7-93-131.1C433.5 68.8 368.8 32 288 32zM432 256c0 79.5-64.5 144-144 144s-144-64.5-144-144s64.5-144 144-144s144 64.5 144 144zM288 192c0 35.3-28.7 64-64 64c-11.5 0-22.3-3-31.6-8.4c-.2 2.8-.4 5.5-.4 8.4c0 53 43 96 96 96s96-43 96-96s-43-96-96-96c-2.8 0-5.6 .1-8.4 .4c5.3 9.3 8.4 20.1 8.4 31.6z"/></svg></span></template>
+        <template id=fa-eye-slash><span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M38.8 5.1C28.4-3.1 13.3-1.2 5.1 9.2S-1.2 34.7 9.2 42.9l592 464c10.4 8.2 25.5 6.3 33.7-4.1s6.3-25.5-4.1-33.7L525.6 386.7c39.6-40.6 66.4-86.1 79.9-118.4c3.3-7.9 3.3-16.7 0-24.6c-14.9-35.7-46.2-87.7-93-131.1C465.5 68.8 400.8 32 320 32c-68.2 0-125 26.3-169.3 60.8L38.8 5.1zM223.1 149.5C248.6 126.2 282.7 112 320 112c79.5 0 144 64.5 144 144c0 24.9-6.3 48.3-17.4 68.7L408 294.5c5.2-11.8 8-24.8 8-38.5c0-53-43-96-96-96c-2.8 0-5.6 .1-8.4 .4c5.3 9.3 8.4 20.1 8.4 31.6c0 10.2-2.4 19.8-6.6 28.3l-90.3-70.8zm223.1 298L373 389.9c-16.4 6.5-34.3 10.1-53 10.1c-79.5 0-144-64.5-144-144c0-6.9 .5-13.6 1.4-20.2L83.1 161.5C60.3 191.2 44 220.8 34.5 243.7c-3.3 7.9-3.3 16.7 0 24.6c14.9 35.7 46.2 87.7 93 131.1C174.5 443.2 239.2 480 320 480c47.8 0 89.9-12.9 126.2-32.5z"/></svg></span></template>
+        <template id=fa-copy><span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M502.6 70.63l-61.25-61.25C435.4 3.371 427.2 0 418.7 0H255.1c-35.35 0-64 28.66-64 64l.0195 256C192 355.4 220.7 384 256 384h192c35.2 0 64-28.8 64-64V93.25C512 84.77 508.6 76.63 502.6 70.63zM464 320c0 8.836-7.164 16-16 16H255.1c-8.838 0-16-7.164-16-16L239.1 64.13c0-8.836 7.164-16 16-16h128L384 96c0 17.67 14.33 32 32 32h47.1V320zM272 448c0 8.836-7.164 16-16 16H63.1c-8.838 0-16-7.164-16-16L47.98 192.1c0-8.836 7.164-16 16-16H160V128H63.99c-35.35 0-64 28.65-64 64l.0098 256C.002 483.3 28.66 512 64 512h192c35.2 0 64-28.8 64-64v-32h-47.1L272 448z"/></svg></span></template>
+        <template id=fa-play><span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 384 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M73 39c-14.8-9.1-33.4-9.4-48.5-.9S0 62.6 0 80V432c0 17.4 9.4 33.4 24.5 41.9s33.7 8.1 48.5-.9L361 297c14.3-8.7 23-24.2 23-41s-8.7-32.2-23-41L73 39z"/></svg></span></template>
+        <template id=fa-clock-rotate-left><span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M75 75L41 41C25.9 25.9 0 36.6 0 57.9V168c0 13.3 10.7 24 24 24H134.1c21.4 0 32.1-25.9 17-41l-30.8-30.8C155 85.5 203 64 256 64c106 0 192 86 192 192s-86 192-192 192c-40.8 0-78.6-12.7-109.7-34.4c-14.5-10.1-34.4-6.6-44.6 7.9s-6.6 34.4 7.9 44.6C151.2 495 201.7 512 256 512c141.4 0 256-114.6 256-256S397.4 0 256 0C185.3 0 121.3 28.7 75 75zm181 53c-13.3 0-24 10.7-24 24V256c0 6.4 2.5 12.5 7 17l72 72c9.4 9.4 24.6 9.4 33.9 0s9.4-24.6 0-33.9l-65-65V152c0-13.3-10.7-24-24-24z"/></svg></span></template>
+
+
+
+        <script>
+            window.playground_copyable = true;
+        </script>
+
+
+        <script src="../elasticlunr-ef4e11c1.min.js"></script>
+        <script src="../mark-09e88c2c.min.js"></script>
+        <script src="../searcher-c2a407aa.js"></script>
+
+        <script src="../clipboard-1626706a.min.js"></script>
+        <script src="../highlight-abc7f01d.js"></script>
+        <script src="../book-a0b12cfe.js"></script>
+
+        <!-- Custom JS scripts -->
+        <script src="../docs/custom-732fa610.js"></script>
+        <script src="../docs/mermaid-init-8a66ee6c.js"></script>
+
+
+
+    </div>
+    </body>
+</html>

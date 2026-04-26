@@ -1,0 +1,559 @@
+<!DOCTYPE HTML>
+<html lang="en" class="light sidebar-visible" dir="ltr">
+    <head>
+        <!-- Book generated using mdBook -->
+        <meta charset="UTF-8">
+        <title>Raftstore - NoKV Docs</title>
+
+
+        <!-- Custom HTML head -->
+
+        <meta name="description" content="NoKV design, architecture, migration, and testing documentation.">
+        <meta name="viewport" content="width=device-width, initial-scale=1">
+        <meta name="theme-color" content="#ffffff">
+
+        <link rel="icon" href="favicon-de23e50b.svg">
+        <link rel="shortcut icon" href="favicon-8114d1fc.png">
+        <link rel="stylesheet" href="css/variables-8adf115d.css">
+        <link rel="stylesheet" href="css/general-2459343d.css">
+        <link rel="stylesheet" href="css/chrome-ae938929.css">
+        <link rel="stylesheet" href="css/print-9e4910d8.css" media="print">
+
+        <!-- Fonts -->
+        <link rel="stylesheet" href="fonts/fonts-9644e21d.css">
+
+        <!-- Highlight.js Stylesheets -->
+        <link rel="stylesheet" id="mdbook-highlight-css" href="highlight-493f70e1.css">
+        <link rel="stylesheet" id="mdbook-tomorrow-night-css" href="tomorrow-night-4c0ae647.css">
+        <link rel="stylesheet" id="mdbook-ayu-highlight-css" href="ayu-highlight-3fdfc3ac.css">
+
+        <!-- Custom theme stylesheets -->
+        <link rel="stylesheet" href="docs/custom-a69f6233.css">
+
+
+        <!-- Provide site root and default themes to javascript -->
+        <script>
+            const path_to_root = "";
+            const default_light_theme = "light";
+            const default_dark_theme = "navy";
+            window.path_to_searchindex_js = "searchindex-587b1194.js";
+        </script>
+        <!-- Start loading toc.js asap -->
+        <script src="toc-2018305d.js"></script>
+    </head>
+    <body>
+    <div id="mdbook-help-container">
+        <div id="mdbook-help-popup">
+            <h2 class="mdbook-help-title">Keyboard shortcuts</h2>
+            <div>
+                <p>Press <kbd>←</kbd> or <kbd>→</kbd> to navigate between chapters</p>
+                <p>Press <kbd>S</kbd> or <kbd>/</kbd> to search in the book</p>
+                <p>Press <kbd>?</kbd> to show this help</p>
+                <p>Press <kbd>Esc</kbd> to hide this help</p>
+            </div>
+        </div>
+    </div>
+    <div id="mdbook-body-container">
+        <!-- Work around some values being stored in localStorage wrapped in quotes -->
+        <script>
+            try {
+                let theme = localStorage.getItem('mdbook-theme');
+                let sidebar = localStorage.getItem('mdbook-sidebar');
+
+                if (theme.startsWith('"') && theme.endsWith('"')) {
+                    localStorage.setItem('mdbook-theme', theme.slice(1, theme.length - 1));
+                }
+
+                if (sidebar.startsWith('"') && sidebar.endsWith('"')) {
+                    localStorage.setItem('mdbook-sidebar', sidebar.slice(1, sidebar.length - 1));
+                }
+            } catch (e) { }
+        </script>
+
+        <!-- Set the theme before any content is loaded, prevents flash -->
+        <script>
+            const default_theme = window.matchMedia("(prefers-color-scheme: dark)").matches ? default_dark_theme : default_light_theme;
+            let theme;
+            try { theme = localStorage.getItem('mdbook-theme'); } catch(e) { }
+            if (theme === null || theme === undefined) { theme = default_theme; }
+            const html = document.documentElement;
+            html.classList.remove('light')
+            html.classList.add(theme);
+            html.classList.add("js");
+        </script>
+
+        <input type="checkbox" id="mdbook-sidebar-toggle-anchor" class="hidden">
+
+        <!-- Hide / unhide sidebar before it is displayed -->
+        <script>
+            let sidebar = null;
+            const sidebar_toggle = document.getElementById("mdbook-sidebar-toggle-anchor");
+            if (document.body.clientWidth >= 1080) {
+                try { sidebar = localStorage.getItem('mdbook-sidebar'); } catch(e) { }
+                sidebar = sidebar || 'visible';
+            } else {
+                sidebar = 'hidden';
+                sidebar_toggle.checked = false;
+            }
+            if (sidebar === 'visible') {
+                sidebar_toggle.checked = true;
+            } else {
+                html.classList.remove('sidebar-visible');
+            }
+        </script>
+
+        <nav id="mdbook-sidebar" class="sidebar" aria-label="Table of contents">
+            <!-- populated by js -->
+            <mdbook-sidebar-scrollbox class="sidebar-scrollbox"></mdbook-sidebar-scrollbox>
+            <noscript>
+                <iframe class="sidebar-iframe-outer" src="toc.html"></iframe>
+            </noscript>
+            <div id="mdbook-sidebar-resize-handle" class="sidebar-resize-handle">
+                <div class="sidebar-resize-indicator"></div>
+            </div>
+        </nav>
+
+        <div id="mdbook-page-wrapper" class="page-wrapper">
+
+            <div class="page">
+                <div id="mdbook-menu-bar-hover-placeholder"></div>
+                <div id="mdbook-menu-bar" class="menu-bar sticky">
+                    <div class="left-buttons">
+                        <label id="mdbook-sidebar-toggle" class="icon-button" for="mdbook-sidebar-toggle-anchor" title="Toggle Table of Contents" aria-label="Toggle Table of Contents" aria-controls="mdbook-sidebar">
+                            <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M0 96C0 78.3 14.3 64 32 64H416c17.7 0 32 14.3 32 32s-14.3 32-32 32H32C14.3 128 0 113.7 0 96zM0 256c0-17.7 14.3-32 32-32H416c17.7 0 32 14.3 32 32s-14.3 32-32 32H32c-17.7 0-32-14.3-32-32zM448 416c0 17.7-14.3 32-32 32H32c-17.7 0-32-14.3-32-32s14.3-32 32-32H416c17.7 0 32 14.3 32 32z"/></svg></span>
+                        </label>
+                        <button id="mdbook-theme-toggle" class="icon-button" type="button" title="Change theme" aria-label="Change theme" aria-haspopup="true" aria-expanded="false" aria-controls="mdbook-theme-list">
+                            <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 576 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M371.3 367.1c27.3-3.9 51.9-19.4 67.2-42.9L600.2 74.1c12.6-19.5 9.4-45.3-7.6-61.2S549.7-4.4 531.1 9.6L294.4 187.2c-24 18-38.2 46.1-38.4 76.1L371.3 367.1zm-19.6 25.4l-116-104.4C175.9 290.3 128 339.6 128 400c0 3.9 .2 7.8 .6 11.6c1.8 17.5-10.2 36.4-27.8 36.4H96c-17.7 0-32 14.3-32 32s14.3 32 32 32H240c61.9 0 112-50.1 112-112c0-2.5-.1-5-.2-7.5z"/></svg></span>
+                        </button>
+                        <ul id="mdbook-theme-list" class="theme-popup" aria-label="Themes" role="menu">
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-default_theme">Auto</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-light">Light</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-rust">Rust</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-coal">Coal</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-navy">Navy</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-ayu">Ayu</button></li>
+                        </ul>
+                        <button id="mdbook-search-toggle" class="icon-button" type="button" title="Search (`/`)" aria-label="Toggle Searchbar" aria-expanded="false" aria-keyshortcuts="/ s" aria-controls="mdbook-searchbar">
+                            <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M416 208c0 45.9-14.9 88.3-40 122.7L502.6 457.4c12.5 12.5 12.5 32.8 0 45.3s-32.8 12.5-45.3 0L330.7 376c-34.4 25.2-76.8 40-122.7 40C93.1 416 0 322.9 0 208S93.1 0 208 0S416 93.1 416 208zM208 352c79.5 0 144-64.5 144-144s-64.5-144-144-144S64 128.5 64 208s64.5 144 144 144z"/></svg></span>
+                        </button>
+                    </div>
+
+                    <h1 class="menu-title">NoKV Docs</h1>
+
+                    <div class="right-buttons">
+                        <a href="print.html" title="Print this book" aria-label="Print this book">
+                            <span class=fa-svg id="print-button"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M128 0C92.7 0 64 28.7 64 64v96h64V64H354.7L384 93.3V160h64V93.3c0-17-6.7-33.3-18.7-45.3L400 18.7C388 6.7 371.7 0 354.7 0H128zM384 352v32 64H128V384 368 352H384zm64 32h32c17.7 0 32-14.3 32-32V256c0-35.3-28.7-64-64-64H64c-35.3 0-64 28.7-64 64v96c0 17.7 14.3 32 32 32H64v64c0 35.3 28.7 64 64 64H384c35.3 0 64-28.7 64-64V384zm-16-88c-13.3 0-24-10.7-24-24s10.7-24 24-24s24 10.7 24 24s-10.7 24-24 24z"/></svg></span>
+                        </a>
+                        <a href="https://github.com/feichai0017/NoKV" title="Git repository" aria-label="Git repository">
+                            <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 496 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M165.9 397.4c0 2-2.3 3.6-5.2 3.6-3.3.3-5.6-1.3-5.6-3.6 0-2 2.3-3.6 5.2-3.6 3-.3 5.6 1.3 5.6 3.6zm-31.1-4.5c-.7 2 1.3 4.3 4.3 4.9 2.6 1 5.6 0 6.2-2s-1.3-4.3-4.3-5.2c-2.6-.7-5.5.3-6.2 2.3zm44.2-1.7c-2.9.7-4.9 2.6-4.6 4.9.3 2 2.9 3.3 5.9 2.6 2.9-.7 4.9-2.6 4.6-4.6-.3-1.9-3-3.2-5.9-2.9zM244.8 8C106.1 8 0 113.3 0 252c0 110.9 69.8 205.8 169.5 239.2 12.8 2.3 17.3-5.6 17.3-12.1 0-6.2-.3-40.4-.3-61.4 0 0-70 15-84.7-29.8 0 0-11.4-29.1-27.8-36.6 0 0-22.9-15.7 1.6-15.4 0 0 24.9 2 38.6 25.8 21.9 38.6 58.6 27.5 72.9 20.9 2.3-16 8.8-27.1 16-33.7-55.9-6.2-112.3-14.3-112.3-110.5 0-27.5 7.6-41.3 23.6-58.9-2.6-6.5-11.1-33.3 2.6-67.9 20.9-6.5 69 27 69 27 20-5.6 41.5-8.5 62.8-8.5s42.8 2.9 62.8 8.5c0 0 48.1-33.6 69-27 13.7 34.7 5.2 61.4 2.6 67.9 16 17.7 25.8 31.5 25.8 58.9 0 96.5-58.9 104.2-114.8 110.5 9.2 7.9 17 22.9 17 46.4 0 33.7-.3 75.4-.3 83.6 0 6.5 4.6 14.4 17.3 12.1C428.2 457.8 496 362.9 496 252 496 113.3 383.5 8 244.8 8zM97.2 352.9c-1.3 1-1 3.3.7 5.2 1.6 1.6 3.9 2.3 5.2 1 1.3-1 1-3.3-.7-5.2-1.6-1.6-3.9-2.3-5.2-1zm-10.8-8.1c-.7 1.3.3 2.9 2.3 3.9 1.6 1 3.6.7 4.3-.7.7-1.3-.3-2.9-2.3-3.9-2-.6-3.6-.3-4.3.7zm32.4 35.6c-1.6 1.3-1 4.3 1.3 6.2 2.3 2.3 5.2 2.6 6.5 1 1.3-1.3.7-4.3-1.3-6.2-2.2-2.3-5.2-2.6-6.5-1zm-11.4-14.7c-1.6 1-1.6 3.6 0 5.9 1.6 2.3 4.3 3.3 5.6 2.3 1.6-1.3 1.6-3.9 0-6.2-1.4-2.3-4-3.3-5.6-2z"/></svg></span>
+                        </a>
+
+                    </div>
+                </div>
+
+                <div id="mdbook-search-wrapper" class="hidden">
+                    <form id="mdbook-searchbar-outer" class="searchbar-outer">
+                        <div class="search-wrapper">
+                            <input type="search" id="mdbook-searchbar" name="searchbar" placeholder="Search this book ..." aria-controls="mdbook-searchresults-outer" aria-describedby="searchresults-header">
+                            <div class="spinner-wrapper">
+                                <span class=fa-svg id="fa-spin"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M304 48c0-26.5-21.5-48-48-48s-48 21.5-48 48s21.5 48 48 48s48-21.5 48-48zm0 416c0-26.5-21.5-48-48-48s-48 21.5-48 48s21.5 48 48 48s48-21.5 48-48zM48 304c26.5 0 48-21.5 48-48s-21.5-48-48-48s-48 21.5-48 48s21.5 48 48 48zm464-48c0-26.5-21.5-48-48-48s-48 21.5-48 48s21.5 48 48 48s48-21.5 48-48zM142.9 437c18.7-18.7 18.7-49.1 0-67.9s-49.1-18.7-67.9 0s-18.7 49.1 0 67.9s49.1 18.7 67.9 0zm0-294.2c18.7-18.7 18.7-49.1 0-67.9S93.7 56.2 75 75s-18.7 49.1 0 67.9s49.1 18.7 67.9 0zM369.1 437c18.7 18.7 49.1 18.7 67.9 0s18.7-49.1 0-67.9s-49.1-18.7-67.9 0s-18.7 49.1 0 67.9z"/></svg></span>
+                            </div>
+                        </div>
+                    </form>
+                    <div id="mdbook-searchresults-outer" class="searchresults-outer hidden">
+                        <div id="mdbook-searchresults-header" class="searchresults-header"></div>
+                        <ul id="mdbook-searchresults">
+                        </ul>
+                    </div>
+                </div>
+
+                <!-- Apply ARIA attributes after the sidebar and the sidebar toggle button are added to the DOM -->
+                <script>
+                    document.getElementById('mdbook-sidebar-toggle').setAttribute('aria-expanded', sidebar === 'visible');
+                    document.getElementById('mdbook-sidebar').setAttribute('aria-hidden', sidebar !== 'visible');
+                    Array.from(document.querySelectorAll('#mdbook-sidebar a')).forEach(function(link) {
+                        link.setAttribute('tabIndex', sidebar === 'visible' ? 0 : -1);
+                    });
+                </script>
+
+                <div id="mdbook-content" class="content">
+                    <main>
+                        <h1 id="raftstore-deep-dive"><a class="header" href="#raftstore-deep-dive">RaftStore Deep Dive</a></h1>
+<p><code>raftstore</code> powers NoKV’s distributed mode by layering multi-Raft replication on top of the embedded storage engine. Its RPC surface is exposed as the <code>NoKV</code> gRPC service, while the command model still tracks the TinyKV/TiKV region + MVCC design. This note explains the major packages, the boot and command paths, how transport and storage interact, and the supporting tooling for observability and testing.</p>
+<blockquote>
+<p>Read this page if you want to answer one question precisely: which package owns which responsibility once NoKV leaves standalone mode and becomes a cluster.</p>
+</blockquote>
+<p>For the protocol line that now minimally formalizes <code>raftstore</code> request
+admission, transition execution, publish boundaries, and restart state, read
+<code>docs/control_and_execution_protocols.md</code> together with this file.</p>
+<h2 id="reader-map"><a class="header" href="#reader-map">Reader Map</a></h2>
+<ul>
+<li>Start with section 1 if you want package ownership.</li>
+<li>Jump to section 3 if you want request execution.</li>
+<li>Jump to section 8 if you care about split/merge and control-plane behavior.</li>
+<li>Read this together with <a href="coordinator.html"><code>coordinator.md</code></a> and <a href="migration.html"><code>migration.md</code></a> if your focus is lifecycle rather than just request flow.</li>
+</ul>
+<hr>
+<h2 id="1-package-structure"><a class="header" href="#1-package-structure">1. Package Structure</a></h2>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Package</th><th>Responsibility</th></tr>
+</thead>
+<tbody>
+<tr><td><a href="../raftstore/store"><code>store</code></a></td><td>Orchestrates peer set, command pipeline, region manager, scheduler/heartbeat loops; exposes helpers such as <code>StartPeer</code>, <code>ProposeCommand</code>, <code>SplitRegion</code>.</td></tr>
+<tr><td><a href="../raftstore/peer"><code>peer</code></a></td><td>Wraps etcd/raft <code>RawNode</code>, drives Ready processing (persist to WAL, send messages, apply entries), tracks snapshot resend/backlog.</td></tr>
+<tr><td><a href="../raftstore/raftlog"><code>raftlog</code></a></td><td>WALStorage/DiskStorage/MemoryStorage across all Raft groups, leveraging the NoKV WAL while tracking store-local raft replay metadata.</td></tr>
+<tr><td><a href="../raftstore/localmeta"><code>meta</code></a></td><td>Store-local durable metadata: peer catalog for restart and raft WAL replay checkpoints for replay/GC.</td></tr>
+<tr><td><a href="../raftstore/transport"><code>transport</code></a></td><td>gRPC transport with retry/TLS/backpressure; exposes the raft Step RPC and can host additional services (NoKV).</td></tr>
+<tr><td><a href="../raftstore/kv"><code>kv</code></a></td><td>NoKV RPC implementation, bridging Raft commands to MVCC operations via <code>kv.Apply</code>.</td></tr>
+<tr><td><a href="../raftstore/server"><code>server</code></a></td><td><code>Config</code> + <code>NewNode</code> that bind storage, Store, transport, and the shared KV/admin RPC surfaces into a reusable node primitive.</td></tr>
+</tbody>
+</table>
+</div>
+<h3 id="runtime-ownership-sketch"><a class="header" href="#runtime-ownership-sketch">Runtime ownership sketch</a></h3>
+<pre class="mermaid">flowchart TD
+    Client["Client / Redis gateway / CLI"]
+    Client --&gt; KV["kv.Service"]
+    Client --&gt; Coordinator["Coordinator"]
+
+    subgraph "Node runtime"
+        Server["server.Node"] --&gt; Store["store.Store"]
+        Store --&gt; Router["router"]
+        Store --&gt; Peer["peer.Peer"]
+        Store --&gt; Scheduler["scheduler runtime"]
+        Store --&gt; Admin["admin service"]
+        Store --&gt; Meta["raftstore/localmeta"]
+        Peer --&gt; Engine["raftstore/raftlog"]
+        Peer --&gt; Apply["kv.Apply"]
+    end
+
+    Apply --&gt; DB["NoKV DB"]
+</pre>
+
+<hr>
+<h2 id="2-boot-sequence"><a class="header" href="#2-boot-sequence">2. Boot Sequence</a></h2>
+<ol>
+<li>
+<p><strong>Construct Server</strong></p>
+<pre><code class="language-go">srv, _ := server.NewNode(server.Config{
+    Storage: server.Storage{MVCC: db, Raft: db.RaftLog()},
+    Store: store.Config{StoreID: 1},
+    Raft: myraft.Config{ElectionTick: 10, HeartbeatTick: 2, PreVote: true},
+    TransportAddr: "127.0.0.1:20160",
+})
+</code></pre>
+<ul>
+<li>A gRPC transport is created, the NoKV service is registered, and <code>transport.SetHandler(store.Step)</code> wires raft Step handling.</li>
+<li><code>store.Store</code> loads the local peer catalog from <code>raftstore/localmeta</code> to rebuild the Region catalog (router + metrics).</li>
+</ul>
+</li>
+<li>
+<p><strong>Start local peers</strong></p>
+<ul>
+<li>CLI (<code>nokv serve</code>) loads the local peer catalog and calls <code>Store.StartPeer</code> for every region that includes the local store.</li>
+<li>Each <code>peer.Config</code> carries raft parameters, the transport reference, <code>kv.NewEntryApplier</code>, peer storage, and Region metadata.</li>
+<li><code>StartPeer</code> registers the peer through the peer-set/routing layer and may bootstrap or campaign for leadership.</li>
+</ul>
+</li>
+<li>
+<p><strong>Peer connectivity</strong></p>
+<ul>
+<li><code>transport.SetPeer(peerID, addr)</code> defines outbound raft connections; the CLI resolves those peer endpoints from local metadata plus stable <code>storeID -&gt; addr</code> mapping.</li>
+<li>Additional services can reuse the same gRPC server through <code>transport.WithServerRegistrar</code>.</li>
+</ul>
+</li>
+</ol>
+<h3 id="minimal-mental-model"><a class="header" href="#minimal-mental-model">Minimal mental model</a></h3>
+<ul>
+<li><code>Server</code> is the node wiring root.</li>
+<li><code>Store</code> is the runtime owner for what this node hosts.</li>
+<li><code>Peer</code> is one region replica’s state machine and raft runtime.</li>
+<li><code>Meta</code> is a local recovery mirror, not cluster truth.</li>
+<li><code>Coordinator</code> is control plane, not a writer of local truth.</li>
+</ul>
+<hr>
+<h2 id="3-command-execution"><a class="header" href="#3-command-execution">3. Command Execution</a></h2>
+<h3 id="read-strong-leader-read"><a class="header" href="#read-strong-leader-read">Read (strong leader read)</a></h3>
+<ol>
+<li><code>kv.Service.KvGet</code> builds <code>pb.RaftCmdRequest</code> and invokes <code>Store.ReadCommand</code>.</li>
+<li><code>validateCommand</code> ensures the region exists, epoch matches, and the local peer is leader; a RegionError is returned otherwise.</li>
+<li><code>peer.LinearizableRead</code> obtains a safe read index, then <code>peer.WaitApplied</code> waits until local apply index reaches it.</li>
+<li><code>commandApplier</code> (i.e. <code>kv.Apply</code>) runs GET/SCAN against the DB using MVCC readers to honor locks and version visibility.</li>
+</ol>
+<h3 id="write-via-propose"><a class="header" href="#write-via-propose">Write (via Propose)</a></h3>
+<ol>
+<li>Write RPCs (Prewrite/Commit/…) call <code>Store.ProposeCommand</code>, encoding the command and routing to the leader peer.</li>
+<li>The leader appends the encoded request to raft, replicates, and once committed the command pipeline hands data to <code>kv.Apply</code>, which maps Prewrite/Commit/ResolveLock to the <code>percolator</code> package.</li>
+<li><code>engine.WALStorage</code> persists raft entries/state snapshots and updates <code>raftstore/localmeta</code> raft pointers. This keeps WAL GC and raft truncation aligned without polluting the storage manifest.</li>
+<li>Raft apply only accepts command-encoded payloads (<code>RaftCmdRequest</code>). Legacy raw KV payloads are rejected as unsupported.</li>
+</ol>
+<h3 id="command-flow-diagram"><a class="header" href="#command-flow-diagram">Command flow diagram</a></h3>
+<pre class="mermaid">sequenceDiagram
+    participant C as NoKV Client
+    participant SVC as kv.Service
+    participant ST as store.Store
+    participant PR as peer.Peer
+    participant RF as raft log/replication
+    participant AP as kv.Apply
+    participant DB as NoKV DB
+
+    rect rgb(237, 247, 255)
+      C-&gt;&gt;SVC: KvGet/KvScan
+      SVC-&gt;&gt;ST: ReadCommand
+      ST-&gt;&gt;PR: LinearizableRead + WaitApplied
+      ST-&gt;&gt;AP: commandApplier(req)
+      AP-&gt;&gt;DB: internal read path
+      AP--&gt;&gt;C: read response
+    end
+
+    rect rgb(241, 253, 244)
+      C-&gt;&gt;SVC: KvPrewrite/KvCommit/...
+      SVC-&gt;&gt;ST: ProposeCommand
+      ST-&gt;&gt;RF: route + replicate
+      RF-&gt;&gt;AP: apply committed entry
+      AP-&gt;&gt;DB: percolator mutate -&gt; ApplyInternalEntries
+      AP--&gt;&gt;C: write response
+    end
+</pre>
+
+<hr>
+<h2 id="4-transport"><a class="header" href="#4-transport">4. Transport</a></h2>
+<ul>
+<li>gRPC transport listens on <code>TransportAddr</code>, serving both raft Step RPC and NoKV RPC.</li>
+<li><code>SetPeer</code> updates the mapping of remote store IDs to addresses; <code>BlockPeer</code> can be used by tests or chaos tooling.</li>
+<li>Configurable retry/backoff/timeout options mirror production requirements. Tests cover message loss, blocked peers, and partitions.</li>
+</ul>
+<hr>
+<h2 id="5-storage-backend-engine"><a class="header" href="#5-storage-backend-engine">5. Storage Backend (engine)</a></h2>
+<ul>
+<li><code>WALStorage</code> piggybacks on the embedded WAL: each Raft group writes typed entries, HardState, and snapshots into the shared log.</li>
+<li><code>raftstore/localmeta</code> persists the store-local raft replay pointer used by WAL GC and replay.</li>
+<li>Alternative storage backends (<code>DiskStorage</code>, <code>MemoryStorage</code>) are available for tests and special scenarios.</li>
+</ul>
+<hr>
+<h2 id="6-nokv-rpc-integration"><a class="header" href="#6-nokv-rpc-integration">6. NoKV RPC Integration</a></h2>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>RPC</th><th>Execution Path</th><th>Notes</th></tr>
+</thead>
+<tbody>
+<tr><td><code>KvGet</code> / <code>KvScan</code></td><td><code>ReadCommand</code> → <code>LinearizableRead(ReadIndex)</code> + <code>WaitApplied</code> → <code>kv.Apply</code> (read mode)</td><td>Leader-only strong read with Raft linearizability barrier.</td></tr>
+<tr><td><code>KvPrewrite</code> / <code>KvCommit</code> / <code>KvBatchRollback</code> / <code>KvResolveLock</code> / <code>KvCheckTxnStatus</code></td><td><code>ProposeCommand</code> → command pipeline → raft log → <code>kv.Apply</code></td><td>Pipeline matches proposals with apply results; MVCC latch manager prevents write conflicts.</td></tr>
+</tbody>
+</table>
+</div>
+<p>The <code>cmd/nokv serve</code> command uses <code>server.Node</code> internally and prints a local peer catalog summary (key ranges, peers) so operators can verify the node’s recovery view at startup.</p>
+<hr>
+<h2 id="7-client-interaction-raftstoreclient"><a class="header" href="#7-client-interaction-raftstoreclient">7. Client Interaction (<code>raftstore/client</code>)</a></h2>
+<ul>
+<li>Region-aware routing with NotLeader/EpochNotMatch retry.</li>
+<li><code>Mutate</code> splits mutations by region and performs two-phase commit (primary first). <code>Put</code> / <code>Delete</code> are convenience wrappers.</li>
+<li><code>Scan</code> transparently walks region boundaries.</li>
+<li>End-to-end coverage lives in <code>raftstore/server/node_test.go</code>, which launches real nodes, uses the client to write and delete keys, and verifies the results.</li>
+</ul>
+<hr>
+<h2 id="8-control-plane--region-operations"><a class="header" href="#8-control-plane--region-operations">8. Control Plane &amp; Region Operations</a></h2>
+<h3 id="81-topology--routing"><a class="header" href="#81-topology--routing">8.1 Topology &amp; Routing</a></h3>
+<ul>
+<li>Topology is sourced from <code>raft_config.example.json</code> (via <code>config.LoadFile</code>) and
+reused by scripts, Docker Compose, and the Redis gateway as bootstrap metadata.</li>
+<li>Runtime routing is Coordinator-first: <code>raftstore/client</code> resolves Regions by key through
+<code>GetRegionByKey</code> and caches route entries for retries.</li>
+<li><code>raft_config</code> regions are treated as bootstrap/deployment metadata and are not
+the runtime source of truth once Coordinator is available.</li>
+<li>Coordinator is the only control-plane source of truth for runtime scheduling/routing.</li>
+</ul>
+<h3 id="why-the-layering-matters"><a class="header" href="#why-the-layering-matters">Why the layering matters</a></h3>
+<p>The design rule is:</p>
+<ul>
+<li><code>RaftAdmin</code> executes membership operations against the current leader store.</li>
+<li><code>Coordinator</code> decides and observes at the cluster level.</li>
+<li><code>Store/Peer</code> own local truth and apply.</li>
+</ul>
+<p>That split is what keeps migration and scheduling from becoming a second,
+parallel truth path.</p>
+<h3 id="82-split--merge"><a class="header" href="#82-split--merge">8.2 Split / Merge</a></h3>
+<ul>
+<li><strong>Split</strong>: leaders call <code>Store.ProposeSplit</code>, which writes a split
+<code>AdminCommand</code> into the parent region’s raft log. On apply,
+<code>Store.SplitRegion</code> updates the parent range/epoch and starts the child peer.</li>
+<li><strong>Merge</strong>: leaders call <code>Store.ProposeMerge</code>, writing a merge <code>AdminCommand</code>.
+On apply, the target region range/epoch is expanded and the source peer is
+stopped/removed from the manifest.</li>
+<li>These operations are explicit/manual and are not auto-triggered by
+size/traffic heuristics.</li>
+</ul>
+<hr>
+<h2 id="9-observability"><a class="header" href="#9-observability">9. Observability</a></h2>
+<ul>
+<li><code>store.RegionMetrics()</code> feeds into <code>StatsSnapshot</code>, making region counts and backlog visible via expvar and <code>nokv stats</code>.</li>
+<li><code>nokv regions</code> shows the local peer catalog used for store recovery: ID, range, peers, state. It is a store-local recovery view, not cluster routing authority.</li>
+<li><code>CHAOS_TRACE_METRICS=1 go test -run 'TestGRPCTransport(HandlesPartition|MetricsWatchdog|MetricsBlockedPeers)' -count=1 -v ./raftstore/transport</code> exercises transport metrics under faults; <code>scripts/dev/cluster.sh</code> spins up multi-node clusters for manual inspection.</li>
+</ul>
+<h3 id="store-internals-at-a-glance"><a class="header" href="#store-internals-at-a-glance">Store internals at a glance</a></h3>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Component</th><th>File</th><th>Responsibility</th></tr>
+</thead>
+<tbody>
+<tr><td>Store facade</td><td><a href="../raftstore/store/store.go"><code>store.go</code></a></td><td>Store construction/wiring and shared component ownership (router, region manager, command pipeline, scheduler runtime).</td></tr>
+<tr><td>Peer lifecycle</td><td><a href="../raftstore/store/peer_lifecycle.go"><code>peer_lifecycle.go</code></a></td><td>Start/stop peers, router registration, lifecycle hooks, and store shutdown sequencing.</td></tr>
+<tr><td>Command ops</td><td><a href="../raftstore/store/command_ops.go"><code>command_ops.go</code></a></td><td>Region/epoch/key-range validation and read/propose request handling.</td></tr>
+<tr><td>Admin ops</td><td><a href="../raftstore/store/admin_ops.go"><code>admin_ops.go</code></a></td><td>Split/merge proposal handling and applied admin command side effects.</td></tr>
+<tr><td>Membership ops</td><td><a href="../raftstore/store/membership_ops.go"><code>membership_ops.go</code></a></td><td>Conf-change proposal helpers and local region metadata updates after membership changes.</td></tr>
+<tr><td>Region catalog</td><td><a href="../raftstore/store/region_catalog.go"><code>region_catalog.go</code></a></td><td>Public region catalog accessors and region metadata lifecycle operations.</td></tr>
+<tr><td>Router</td><td><a href="../raftstore/store/router.go"><code>router.go</code></a></td><td>Tracks active peers and dispatches requests/messages to the owning peer.</td></tr>
+<tr><td>Command pipeline</td><td><a href="../raftstore/store/command_pipeline.go"><code>command_pipeline.go</code></a></td><td>Assigns request IDs, records proposals, matches apply results, returns responses/errors to callers.</td></tr>
+<tr><td>Region manager</td><td><a href="../raftstore/store/region_manager.go"><code>region_manager.go</code></a></td><td>Validates state transitions, persists local peer catalog updates, updates peer metadata, publishes scheduler-visible region state.</td></tr>
+<tr><td>Scheduler runtime</td><td><a href="../raftstore/store/scheduler_runtime.go"><code>scheduler_runtime.go</code></a></td><td>Periodically publishes region/store heartbeats, enforces cooldown &amp; burst limits, and applies scheduling actions.</td></tr>
+</tbody>
+</table>
+</div>
+<hr>
+<h2 id="10-region-truth-and-persistence-roles"><a class="header" href="#10-region-truth-and-persistence-roles">10. Region Truth and Persistence Roles</a></h2>
+<p>NoKV intentionally keeps three different region views, and they do not have
+equal authority:</p>
+<ol>
+<li>
+<p><strong>Store-local region truth</strong></p>
+<ul>
+<li>Advanced only through raft apply paths and bootstrap/restart loading.</li>
+<li>Owned by <a href="../raftstore/store/region_manager.go"><code>region_manager.go</code></a> via:
+<ul>
+<li><code>applyRegionMeta</code></li>
+<li><code>applyRegionState</code></li>
+<li><code>applyRegionRemoval</code></li>
+<li><code>loadBootstrapSnapshot</code></li>
+</ul>
+</li>
+<li>This is the runtime source of truth for what a store currently hosts.</li>
+</ul>
+</li>
+<li>
+<p><strong>Store-local persistent mirror</strong></p>
+<ul>
+<li>Owned by <a href="../raftstore/localmeta"><code>raftstore/localmeta</code></a>.</li>
+<li>Persists:
+<ul>
+<li>local region catalog entries for restart</li>
+<li>local raft WAL replay checkpoints</li>
+</ul>
+</li>
+<li>This mirror exists for local recovery only. It is not cluster routing
+authority and must not be treated as consensus truth outside the store.</li>
+</ul>
+</li>
+<li>
+<p><strong>Coordinator control-plane view</strong></p>
+<ul>
+<li>Owned by Coordinator and persisted through <a href="../coordinator/rootview"><code>coordinator/rootview</code></a>.</li>
+<li>Built from region/store heartbeats and allocator durability checkpoints.</li>
+<li>Used for:
+<ul>
+<li>route lookup</li>
+<li>scheduler decisions</li>
+<li>allocator durability</li>
+</ul>
+</li>
+<li>Coordinator is not allowed to overwrite local raftstore truth directly.</li>
+</ul>
+</li>
+</ol>
+<p>The resulting rule is simple:</p>
+<ul>
+<li><code>raft apply/bootstrap</code> advances local truth</li>
+<li><code>raftstore/localmeta</code> mirrors that truth for restart</li>
+<li><code>Coordinator</code> observes and schedules from heartbeats</li>
+</ul>
+<p>This separation is what prevents parallel truth sources from creeping back into
+the design.</p>
+<hr>
+<h2 id="11-current-boundaries-and-guarantees"><a class="header" href="#11-current-boundaries-and-guarantees">11. Current Boundaries and Guarantees</a></h2>
+<ul>
+<li>Reads served through <code>ReadCommand</code> are leader-strong and pass a Raft
+linearizability barrier (<code>LinearizableRead</code> + <code>WaitApplied</code>).</li>
+<li>Mutating NoKV RPC commands are serialized through Raft log replication and apply.</li>
+<li>Command payload format on apply path is strict <code>RaftCmdRequest</code> encoding.</li>
+<li>Region metadata (range/epoch/peers) is validated before both read and write
+command execution.</li>
+<li>The store now records explicit execution-plane admission outcomes for read,
+write, and topology entry points.</li>
+<li>Topology transitions now record explicit local execution outcome plus publish
+boundary state (<code>planned published</code>, <code>terminal pending</code>, <code>terminal published</code>,
+<code>terminal failed</code>).</li>
+<li>Terminal publish failure is retained as visible retry state rather than being
+silently dropped.</li>
+<li>Restart posture is now exposed explicitly from local durable recovery state
+(<code>raftstore/localmeta</code> + raft replay pointers).</li>
+<li><code>raftstore/admin</code> now exposes execution-plane diagnostics through
+<code>ExecutionStatus</code> for last admission, topology lifecycle, and restart
+posture.</li>
+<li><code>nokv execution --addr &lt;store-admin-addr&gt;</code> now queries that diagnostics
+surface directly from the CLI, with optional <code>--region</code> and <code>--transition</code>
+filters on topology output.</li>
+<li><code>store.RegionMetrics</code> + <code>StatsSnapshot</code> provide runtime visibility for region
+count, backlog, and scheduling health.</li>
+</ul>
+
+                    </main>
+
+                    <nav class="nav-wrapper" aria-label="Page navigation">
+                        <!-- Mobile navigation buttons -->
+                            <a rel="prev" href="errors.html" class="mobile-nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                                <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M41.4 233.4c-12.5 12.5-12.5 32.8 0 45.3l160 160c12.5 12.5 32.8 12.5 45.3 0s12.5-32.8 0-45.3L109.3 256 246.6 118.6c12.5-12.5 12.5-32.8 0-45.3s-32.8-12.5-45.3 0l-160 160z"/></svg></span>
+                            </a>
+
+                            <a rel="next prefetch" href="coordinator.html" class="mobile-nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                                <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M278.6 233.4c12.5 12.5 12.5 32.8 0 45.3l-160 160c-12.5 12.5-32.8 12.5-45.3 0s-12.5-32.8 0-45.3L210.7 256 73.4 118.6c-12.5-12.5-12.5-32.8 0-45.3s32.8-12.5 45.3 0l160 160z"/></svg></span>
+                            </a>
+
+                        <div style="clear: both"></div>
+                    </nav>
+                </div>
+            </div>
+
+            <nav class="nav-wide-wrapper" aria-label="Page navigation">
+                    <a rel="prev" href="errors.html" class="nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                        <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M41.4 233.4c-12.5 12.5-12.5 32.8 0 45.3l160 160c12.5 12.5 32.8 12.5 45.3 0s12.5-32.8 0-45.3L109.3 256 246.6 118.6c12.5-12.5 12.5-32.8 0-45.3s-32.8-12.5-45.3 0l-160 160z"/></svg></span>
+                    </a>
+
+                    <a rel="next prefetch" href="coordinator.html" class="nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                        <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M278.6 233.4c12.5 12.5 12.5 32.8 0 45.3l-160 160c-12.5 12.5-32.8 12.5-45.3 0s-12.5-32.8 0-45.3L210.7 256 73.4 118.6c-12.5-12.5-12.5-32.8 0-45.3s32.8-12.5 45.3 0l160 160z"/></svg></span>
+                    </a>
+            </nav>
+
+        </div>
+
+        <template id=fa-eye><span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 576 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M288 32c-80.8 0-145.5 36.8-192.6 80.6C48.6 156 17.3 208 2.5 243.7c-3.3 7.9-3.3 16.7 0 24.6C17.3 304 48.6 356 95.4 399.4C142.5 443.2 207.2 480 288 480s145.5-36.8 192.6-80.6c46.8-43.5 78.1-95.4 93-131.1c3.3-7.9 3.3-16.7 0-24.6c-14.9-35.7-46.2-87.7-93-131.1C433.5 68.8 368.8 32 288 32zM432 256c0 79.5-64.5 144-144 144s-144-64.5-144-144s64.5-144 144-144s144 64.5 144 144zM288 192c0 35.3-28.7 64-64 64c-11.5 0-22.3-3-31.6-8.4c-.2 2.8-.4 5.5-.4 8.4c0 53 43 96 96 96s96-43 96-96s-43-96-96-96c-2.8 0-5.6 .1-8.4 .4c5.3 9.3 8.4 20.1 8.4 31.6z"/></svg></span></template>
+        <template id=fa-eye-slash><span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M38.8 5.1C28.4-3.1 13.3-1.2 5.1 9.2S-1.2 34.7 9.2 42.9l592 464c10.4 8.2 25.5 6.3 33.7-4.1s6.3-25.5-4.1-33.7L525.6 386.7c39.6-40.6 66.4-86.1 79.9-118.4c3.3-7.9 3.3-16.7 0-24.6c-14.9-35.7-46.2-87.7-93-131.1C465.5 68.8 400.8 32 320 32c-68.2 0-125 26.3-169.3 60.8L38.8 5.1zM223.1 149.5C248.6 126.2 282.7 112 320 112c79.5 0 144 64.5 144 144c0 24.9-6.3 48.3-17.4 68.7L408 294.5c5.2-11.8 8-24.8 8-38.5c0-53-43-96-96-96c-2.8 0-5.6 .1-8.4 .4c5.3 9.3 8.4 20.1 8.4 31.6c0 10.2-2.4 19.8-6.6 28.3l-90.3-70.8zm223.1 298L373 389.9c-16.4 6.5-34.3 10.1-53 10.1c-79.5 0-144-64.5-144-144c0-6.9 .5-13.6 1.4-20.2L83.1 161.5C60.3 191.2 44 220.8 34.5 243.7c-3.3 7.9-3.3 16.7 0 24.6c14.9 35.7 46.2 87.7 93 131.1C174.5 443.2 239.2 480 320 480c47.8 0 89.9-12.9 126.2-32.5z"/></svg></span></template>
+        <template id=fa-copy><span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M502.6 70.63l-61.25-61.25C435.4 3.371 427.2 0 418.7 0H255.1c-35.35 0-64 28.66-64 64l.0195 256C192 355.4 220.7 384 256 384h192c35.2 0 64-28.8 64-64V93.25C512 84.77 508.6 76.63 502.6 70.63zM464 320c0 8.836-7.164 16-16 16H255.1c-8.838 0-16-7.164-16-16L239.1 64.13c0-8.836 7.164-16 16-16h128L384 96c0 17.67 14.33 32 32 32h47.1V320zM272 448c0 8.836-7.164 16-16 16H63.1c-8.838 0-16-7.164-16-16L47.98 192.1c0-8.836 7.164-16 16-16H160V128H63.99c-35.35 0-64 28.65-64 64l.0098 256C.002 483.3 28.66 512 64 512h192c35.2 0 64-28.8 64-64v-32h-47.1L272 448z"/></svg></span></template>
+        <template id=fa-play><span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 384 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M73 39c-14.8-9.1-33.4-9.4-48.5-.9S0 62.6 0 80V432c0 17.4 9.4 33.4 24.5 41.9s33.7 8.1 48.5-.9L361 297c14.3-8.7 23-24.2 23-41s-8.7-32.2-23-41L73 39z"/></svg></span></template>
+        <template id=fa-clock-rotate-left><span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M75 75L41 41C25.9 25.9 0 36.6 0 57.9V168c0 13.3 10.7 24 24 24H134.1c21.4 0 32.1-25.9 17-41l-30.8-30.8C155 85.5 203 64 256 64c106 0 192 86 192 192s-86 192-192 192c-40.8 0-78.6-12.7-109.7-34.4c-14.5-10.1-34.4-6.6-44.6 7.9s-6.6 34.4 7.9 44.6C151.2 495 201.7 512 256 512c141.4 0 256-114.6 256-256S397.4 0 256 0C185.3 0 121.3 28.7 75 75zm181 53c-13.3 0-24 10.7-24 24V256c0 6.4 2.5 12.5 7 17l72 72c9.4 9.4 24.6 9.4 33.9 0s9.4-24.6 0-33.9l-65-65V152c0-13.3-10.7-24-24-24z"/></svg></span></template>
+
+
+
+        <script>
+            window.playground_copyable = true;
+        </script>
+
+
+        <script src="elasticlunr-ef4e11c1.min.js"></script>
+        <script src="mark-09e88c2c.min.js"></script>
+        <script src="searcher-c2a407aa.js"></script>
+
+        <script src="clipboard-1626706a.min.js"></script>
+        <script src="highlight-abc7f01d.js"></script>
+        <script src="book-a0b12cfe.js"></script>
+
+        <!-- Custom JS scripts -->
+        <script src="docs/custom-732fa610.js"></script>
+        <script src="docs/mermaid-init-8a66ee6c.js"></script>
+
+
+
+    </div>
+    </body>
+</html>
