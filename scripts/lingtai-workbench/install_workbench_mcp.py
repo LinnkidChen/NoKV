@@ -27,6 +27,7 @@ DEFAULT_SERVER_BIND = "127.0.0.1:7799"
 # and expanded by lingtai-kernel at MCP launch (Agent._expand_agent_placeholders).
 # Must stay identical to the kernel's bundled nokv-workbench skill assets.
 DEFAULT_WORKBENCH_ROOT = "/agents/{agent_id}/wb"
+AGENT_TEMPLATE_TOKENS = ("{agent_id}", "{agent_address}", "{agent_dir}")
 _SINGLETON_OPTIONS_SEEN = "_identity_critical_singleton_options_seen"
 
 
@@ -167,6 +168,26 @@ def mcp_args(config: InstallConfig) -> list[str]:
     return args
 
 
+def template_arg_indices(config: InstallConfig) -> list[int]:
+    """Return the generated argv positions that LingTai may template-expand."""
+
+    args = mcp_args(config)
+    root_index = args.index("--workbench-root") + 1
+    root = args[root_index]
+    if any(token in root for token in AGENT_TEMPLATE_TOKENS):
+        return [root_index]
+    return []
+
+
+def mcp_launch_semantics(config: InstallConfig) -> dict[str, Any]:
+    """Canonical launch behavior bound by the rollout lock."""
+
+    return {
+        "args": mcp_args(config),
+        "template_arg_indices": template_arg_indices(config),
+    }
+
+
 def registry_record(config: InstallConfig) -> dict[str, Any]:
     return {
         "name": config.mcp_name,
@@ -174,6 +195,7 @@ def registry_record(config: InstallConfig) -> dict[str, Any]:
         "transport": "stdio",
         "command": config.nokv_bin,
         "args": mcp_args(config),
+        "template_arg_indices": template_arg_indices(config),
         "source": config.source,
     }
 
@@ -183,6 +205,7 @@ def init_spec(config: InstallConfig) -> dict[str, Any]:
         "type": "stdio",
         "command": config.nokv_bin,
         "args": mcp_args(config),
+        "template_arg_indices": template_arg_indices(config),
     }
 
 

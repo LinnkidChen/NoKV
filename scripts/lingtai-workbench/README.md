@@ -56,8 +56,12 @@ then owns:
 
 The lock records the binary digest and size, NoKV commit, `Cargo.lock` digest,
 the schema-specific exact Holt source identity, selected profile, launch
-arguments and their digest, concrete Agent root, and canonical MCP contract
-evidence including the exact `tools/list` order. Current
+arguments, the exact `template_arg_indices`, their combined launch-semantics
+digest, concrete Agent root, and canonical MCP contract evidence including the
+exact `tools/list` order. New writes use
+`nokv.lingtai.workbench_lock.v2`. A v1 lock remains readable and checkable with
+its historical expand-all semantics, and only a later normal synchronization
+upgrades all three Agent files to v2; `--check` never rewrites it. Current
 `nokv.build_info.v2` identities record the crates.io registry identifier, exact
 crate version, and Holt package checksum from `Cargo.lock`; legacy
 `nokv.build_info.v1` identities retain the git commit and remain checkable
@@ -71,6 +75,17 @@ The helper's default process state is below
 `<NoKV checkout>/target/lingtai-workbench`. Metadata is durable product state,
 not process scratch: deployments must override `LINGTAI_WORKBENCH_META_DIR` to
 a persistent location and keep that location stable across updates.
+
+The v2 writer requires a LingTai kernel that validates and honors optional
+`template_arg_indices` on initial activation and retry/refresh. It dynamically
+selects only the value after `--workbench-root` when that value contains a
+supported Agent token; all other arguments remain literal. Until a LingTai
+release explicitly advertises this capability, the source-bound companion
+smoke in the user preflight guide is the minimum-version gate. Do not run a v2
+`lingtai` registration on an older expand-all kernel. Before an unavoidable
+kernel downgrade, use the compatible kernel to roll the profile back to
+`workbench`, complete `--check` and `/refresh`, verify that no non-root argument
+contains a supported Agent token, and only then change kernels.
 
 ## Environment Reference
 

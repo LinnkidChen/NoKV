@@ -281,6 +281,8 @@ class SyncWorkbenchMcpTest(unittest.TestCase):
             registry_before = (agent / "mcp_registry.jsonl").read_bytes()
 
             lock = json.loads(lock_before)
+            registry = json.loads(registry_before)
+            init = json.loads(init_before)
             command = Path(lock["artifact"]["command"])
             self.assertTrue(command.is_file())
             self.assertIn(self.source_revision(source), command.parts)
@@ -300,6 +302,25 @@ class SyncWorkbenchMcpTest(unittest.TestCase):
             )
             self.assertEqual(lock["launch"]["workbench_root"], "/agents/coordinator/wb")
             self.assertEqual(lock["launch"]["profile"], "workbench")
+            self.assertEqual(lock["schema"], sync.LOCK_SCHEMA_V2)
+            root_index = registry["args"].index("--workbench-root") + 1
+            self.assertEqual(registry["template_arg_indices"], [root_index])
+            self.assertEqual(
+                init["mcp"]["nokv-workbench"]["template_arg_indices"],
+                [root_index],
+            )
+            self.assertEqual(
+                lock["launch"]["template_arg_indices"], [root_index]
+            )
+            self.assertEqual(
+                lock["launch"]["launch_semantics_sha256"],
+                contract.json_sha256(
+                    {
+                        "args": registry["args"],
+                        "template_arg_indices": [root_index],
+                    }
+                ),
+            )
             self.assertNotIn("workspace_id", lock["launch"])
             self.assertNotIn("workspace_actor_id", lock["launch"])
             self.assertNotIn("workspace_grant", lock["launch"])
@@ -312,6 +333,108 @@ class SyncWorkbenchMcpTest(unittest.TestCase):
                 (agent / "mcp_registry.jsonl").read_bytes(), registry_before
             )
             self.assertIn("already synchronized", second[1])
+
+    def test_v1_lock_remains_checkable_then_normal_sync_upgrades_to_v2(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source = self.make_source(root)
+            project, agent = self.make_project(root)
+            binary = self.make_binary(root, tool_surface())
+
+            installed = self.run_sync(*self.sync_args(project, source, binary))
+            self.assertEqual(installed[0], 0, installed[2])
+            lock_path = agent / sync.LOCK_NAME
+            lock = json.loads(lock_path.read_text(encoding="utf-8"))
+            lock["schema"] = sync.LOCK_SCHEMA_V1
+            del lock["launch"]["template_arg_indices"]
+            del lock["launch"]["launch_semantics_sha256"]
+            lock_path.write_text(
+                json.dumps(lock, indent=2, sort_keys=True) + "\n",
+                encoding="utf-8",
+            )
+            registry_path = agent / "mcp_registry.jsonl"
+            registry = json.loads(registry_path.read_text(encoding="utf-8"))
+            del registry["template_arg_indices"]
+            registry_path.write_text(
+                json.dumps(registry, separators=(",", ":")) + "\n",
+                encoding="utf-8",
+            )
+            init_path = agent / "init.json"
+            init = json.loads(init_path.read_text(encoding="utf-8"))
+            del init["mcp"]["nokv-workbench"]["template_arg_indices"]
+            init_path.write_text(
+                json.dumps(init, indent=2, sort_keys=True) + "\n",
+                encoding="utf-8",
+            )
+            v1_lock_before = lock_path.read_bytes()
+
+            checked = self.run_sync(
+                "--project",
+                str(project),
+                "--agent",
+                "coordinator",
+                "--check",
+            )
+
+            self.assertEqual(checked[0], 0, checked[2])
+            self.assertEqual(lock_path.read_bytes(), v1_lock_before)
+
+            upgraded = self.run_sync(*self.sync_args(project, source, binary))
+
+            self.assertEqual(upgraded[0], 0, upgraded[2])
+            upgraded_lock = json.loads(lock_path.read_text(encoding="utf-8"))
+            self.assertEqual(upgraded_lock["schema"], sync.LOCK_SCHEMA_V2)
+            self.assertIn("template_arg_indices", upgraded_lock["launch"])
+            self.assertIn("launch_semantics_sha256", upgraded_lock["launch"])
+            self.assertIn(
+                "template_arg_indices",
+                json.loads(registry_path.read_text(encoding="utf-8")),
+            )
+
+    def test_v2_check_rejects_template_index_and_semantics_digest_drift(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source = self.make_source(root)
+            project, agent = self.make_project(root)
+            binary = self.make_binary(root, tool_surface())
+            installed = self.run_sync(*self.sync_args(project, source, binary))
+            self.assertEqual(installed[0], 0, installed[2])
+            lock_path = agent / sync.LOCK_NAME
+            original = json.loads(lock_path.read_text(encoding="utf-8"))
+
+            tampered_indices = copy.deepcopy(original)
+            tampered_indices["launch"]["template_arg_indices"] = []
+            lock_path.write_text(
+                json.dumps(tampered_indices, indent=2, sort_keys=True) + "\n",
+                encoding="utf-8",
+            )
+            rejected_indices = self.run_sync(
+                "--project",
+                str(project),
+                "--agent",
+                "coordinator",
+                "--check",
+            )
+
+            self.assertEqual(rejected_indices[0], 1)
+            self.assertIn("template_arg_indices", rejected_indices[2])
+
+            tampered_digest = copy.deepcopy(original)
+            tampered_digest["launch"]["launch_semantics_sha256"] = "f" * 64
+            lock_path.write_text(
+                json.dumps(tampered_digest, indent=2, sort_keys=True) + "\n",
+                encoding="utf-8",
+            )
+            rejected_digest = self.run_sync(
+                "--project",
+                str(project),
+                "--agent",
+                "coordinator",
+                "--check",
+            )
+
+            self.assertEqual(rejected_digest[0], 1)
+            self.assertIn("launch semantics", rejected_digest[2])
 
     def test_registry_holt_v2_output_uses_registry_and_checksum(self):
         with tempfile.TemporaryDirectory() as tmp:

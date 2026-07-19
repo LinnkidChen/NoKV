@@ -43,7 +43,8 @@ Prepare all of the following:
    `init.json` below `/path/to/project/.lingtai/`. The NoKV helper registers MCP
    for an Agent; it does not create the Agent.
 2. A LingTai TUI runtime that already contains the `nokv-workbench` intrinsic
-   skill.
+   skill and a kernel that supports the optional MCP
+   `template_arg_indices` contract described below.
 3. A clean NoKV source checkout on the revision you intend to deploy.
 4. `python3`, `git`, Cargo/Rust, `lsof`, and the AWS CLI. Docker is also needed
    when the configured RustFS endpoint is not already running.
@@ -65,6 +66,31 @@ PY
 
 The command must print `True`. Install a workbench-enabled LingTai release
 before continuing if it does not.
+
+### Kernel compatibility gate
+
+The minimum compatible LingTai kernel is one that validates
+`template_arg_indices` in both `mcp_registry.jsonl` and `init.json`, expands
+placeholders only in the selected argument positions on initial activation and
+retry/refresh, and preserves the legacy expand-all behavior only when the field
+is absent. Until a LingTai release explicitly advertises that capability, do
+not infer compatibility from a package version alone. Before the first update,
+run the source-bound companion gate against the exact kernel and NoKV checkouts
+you intend to deploy:
+
+```bash
+cd /path/to/lingtai-kernel
+uv run --with pytest python scripts/run_nokv_lingtai_mcp_smoke.py \
+  --nokv-source /path/to/NoKV \
+  --junit-xml /tmp/nokv-lingtai-mcp-smoke.xml
+```
+
+The NoKV writer dynamically finds the value after `--workbench-root`. It lists
+only that argv index when the root contains `{agent_id}`, `{agent_address}`, or
+`{agent_dir}`; otherwise it writes an explicit empty list. Workspace ids, actor
+ids, grants, endpoints, and every other argv value remain literal even if their
+opaque bytes happen to contain the same brace-delimited text. Do not run this
+writer with an older kernel that ignores the field.
 
 Choose stable local storage once. This example keeps both Holt metadata and
 local RustFS objects outside the source checkout:
@@ -129,6 +155,13 @@ crate version, and Holt package checksum from `Cargo.lock`. Existing
 `nokv.build_info.v1` artifacts and locks that identify a git-sourced Holt
 revision remain readable and checkable; the helper does not rewrite them into
 a fabricated registry identity.
+
+New synchronization writes `nokv.lingtai.workbench_lock.v2`, which binds both
+the exact ordered argv and `template_arg_indices` in one launch-semantics
+digest. Existing v1 locks remain readable and checkable without mutation under
+their legacy expand-all semantics. A later normal synchronization upgrades the
+registration, init specification, and lock together to v2; a read-only
+`--check` never performs that migration.
 
 By default the helper selects, in order, the only running coordinator, the only
 coordinator, or the only Agent. It performs that selection once; a later
@@ -364,6 +397,19 @@ The profile rollback above changes launch configuration, not stored data. The
 immutable runtime directory and lock protect binary identity; they are not a
 general binary rollback manager. Prefer fixing a binary issue and moving
 forward to a known-good NoKV main revision.
+
+Do not roll the LingTai kernel back below the `template_arg_indices` capability
+while a v2 `lingtai` registration is installed. An older kernel expands every
+placeholder-looking argument and can therefore rewrite a valid opaque
+workspace or actor id while the grant remains bound to the original bytes. If
+an old-kernel rollback is unavoidable, keep the compatible kernel running,
+first use the explicit `lingtai -> workbench` rollback above, complete
+`--check` and `/refresh`, verify from the v2 lock that no argument other than
+the selected Workbench root contains a supported Agent token, and only then
+change the kernel. That sequence removes the opaque workspace/actor arguments
+before the old expand-all implementation can see them. The ability to read a
+historical v1 lock is migration support; it is not evidence that an old kernel
+is safe with a new v2 registration.
 
 After the first durable restore operation activates `restore_to_fork_v1`, the
 persistent metadata contains an active marker and allocator downgrade fence.

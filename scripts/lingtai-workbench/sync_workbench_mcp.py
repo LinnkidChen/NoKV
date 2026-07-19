@@ -50,7 +50,10 @@ from workspace_grant import (
 )
 
 
-LOCK_SCHEMA = "nokv.lingtai.workbench_lock.v1"
+LOCK_SCHEMA_V1 = "nokv.lingtai.workbench_lock.v1"
+LOCK_SCHEMA_V2 = "nokv.lingtai.workbench_lock.v2"
+LOCK_SCHEMA = LOCK_SCHEMA_V2
+SUPPORTED_LOCK_SCHEMAS = frozenset({LOCK_SCHEMA_V1, LOCK_SCHEMA_V2})
 LOCK_NAME = "nokv-workbench.lock.json"
 SYNC_LOCK_NAME = ".nokv-workbench.sync.lock"
 TRANSACTION_NAME = ".nokv-workbench.transaction.json"
@@ -509,6 +512,7 @@ def build_lock(
     binary_size: int,
     tools: list[dict[str, Any]],
 ) -> dict[str, Any]:
+    launch_semantics = installer.mcp_launch_semantics(config)
     launch: dict[str, Any] = {
         "transport": "stdio",
         "mcp_name": config.mcp_name,
@@ -519,7 +523,9 @@ def build_lock(
         "s3_bucket": config.s3_bucket,
         "workbench_root_template": config.workbench_root,
         "workbench_root": concrete_root,
-        "args_sha256": json_sha256(installer.mcp_args(config)),
+        "args_sha256": json_sha256(launch_semantics["args"]),
+        "template_arg_indices": launch_semantics["template_arg_indices"],
+        "launch_semantics_sha256": json_sha256(launch_semantics),
     }
     if config.profile == "lingtai":
         grant = installer.parsed_workspace_grant(config)
@@ -560,8 +566,9 @@ def read_lock(path: Path) -> dict[str, Any]:
         ) from err
     assert text is not None
     data = json.loads(text)
-    if not isinstance(data, dict) or data.get("schema") != LOCK_SCHEMA:
-        raise ValueError(f"{path} is not a {LOCK_SCHEMA} object")
+    if not isinstance(data, dict) or data.get("schema") not in SUPPORTED_LOCK_SCHEMAS:
+        supported = ", ".join(sorted(SUPPORTED_LOCK_SCHEMAS))
+        raise ValueError(f"{path} is not a supported workbench lock ({supported})")
     for field in ("artifact", "source", "launch", "contract"):
         if not isinstance(data.get(field), dict):
             raise ValueError(f"{path}: {field} must be a JSON object")
@@ -580,6 +587,9 @@ def lock_profile(lock: dict[str, Any]) -> str:
 
 
 def config_from_lock(lock: dict[str, Any]) -> installer.InstallConfig:
+    schema = lock.get("schema")
+    if schema not in SUPPORTED_LOCK_SCHEMAS:
+        raise ValueError(f"unsupported workbench lock schema: {schema!r}")
     artifact = lock["artifact"]
     launch = lock["launch"]
     source = lock["source"]
@@ -602,6 +612,32 @@ def config_from_lock(lock: dict[str, Any]) -> installer.InstallConfig:
     validate_revision(source["nokv_git_commit"])
     validate_sha256(artifact["sha256"])
     validate_sha256(launch["args_sha256"])
+    if schema == LOCK_SCHEMA_V1:
+        unexpected_semantics = {
+            field
+            for field in ("template_arg_indices", "launch_semantics_sha256")
+            if field in launch
+        }
+        if unexpected_semantics:
+            raise ValueError(
+                "v1 workbench lock uses legacy expand-all launch semantics and "
+                f"must not contain v2 fields: {sorted(unexpected_semantics)}"
+            )
+    else:
+        template_indices = launch.get("template_arg_indices")
+        if not isinstance(template_indices, list) or any(
+            isinstance(index, bool) or not isinstance(index, int)
+            for index in template_indices
+        ):
+            raise ValueError(
+                "v2 workbench lock template_arg_indices must be a JSON integer array"
+            )
+        semantics_sha256 = launch.get("launch_semantics_sha256")
+        if not isinstance(semantics_sha256, str) or not semantics_sha256:
+            raise ValueError(
+                "v2 workbench lock launch_semantics_sha256 must be a non-empty string"
+            )
+        validate_sha256(semantics_sha256)
     endpoint = launch.get("s3_endpoint")
     if endpoint is not None and not isinstance(endpoint, str):
         raise ValueError("workbench lock s3_endpoint must be a string or null")
@@ -702,22 +738,38 @@ def config_from_lock(lock: dict[str, Any]) -> installer.InstallConfig:
     )
     if json_sha256(installer.mcp_args(config)) != launch["args_sha256"]:
         raise ValueError("workbench lock launch arguments do not match args_sha256")
+    if schema == LOCK_SCHEMA_V2:
+        semantics = installer.mcp_launch_semantics(config)
+        if semantics["template_arg_indices"] != launch["template_arg_indices"]:
+            raise ValueError(
+                "workbench lock template_arg_indices do not match launch arguments"
+            )
+        if json_sha256(semantics) != launch["launch_semantics_sha256"]:
+            raise ValueError(
+                "workbench lock launch semantics do not match "
+                "launch_semantics_sha256"
+            )
     return config
 
 
 def verify_agent_configuration(
     agent_dir: Path,
     config: installer.InstallConfig,
+    *,
+    legacy_expand_all: bool = False,
 ) -> None:
+    expected_registry = installer.registry_record(config)
+    expected_init = installer.init_spec(config)
+    if legacy_expand_all:
+        expected_registry.pop("template_arg_indices")
+        expected_init.pop("template_arg_indices")
     records = installer.read_registry(agent_dir / "mcp_registry.jsonl")
     matches = [record for record in records if record.get("name") == config.mcp_name]
-    if matches != [installer.registry_record(config)]:
+    if matches != [expected_registry]:
         raise ValueError("LingTai MCP registry does not match the NoKV workbench lock")
     init = installer.read_init(agent_dir / "init.json")
     mcp = init.get("mcp")
-    if not isinstance(mcp, dict) or mcp.get(config.mcp_name) != installer.init_spec(
-        config
-    ):
+    if not isinstance(mcp, dict) or mcp.get(config.mcp_name) != expected_init:
         raise ValueError("LingTai init.json does not match the NoKV workbench lock")
 
 
@@ -1022,9 +1074,23 @@ def check_lock(
                 "candidate NoKV binary differs from the installed lock; run sync "
                 "without --check after reviewing the update"
             )
-    verify_agent_configuration(agent_dir, config)
+    verify_agent_configuration(
+        agent_dir,
+        config,
+        legacy_expand_all=lock["schema"] == LOCK_SCHEMA_V1,
+    )
     if json_sha256(installer.mcp_args(config)) != lock["launch"].get("args_sha256"):
         raise ValueError("locked MCP launch arguments have drifted")
+    if lock["schema"] == LOCK_SCHEMA_V2:
+        semantics = installer.mcp_launch_semantics(config)
+        if semantics["template_arg_indices"] != lock["launch"].get(
+            "template_arg_indices"
+        ):
+            raise ValueError("locked MCP template argument indices have drifted")
+        if json_sha256(semantics) != lock["launch"].get(
+            "launch_semantics_sha256"
+        ):
+            raise ValueError("locked MCP launch semantics have drifted")
 
     locked_concrete_root = lock["launch"].get("workbench_root")
     if not isinstance(locked_concrete_root, str) or not locked_concrete_root:

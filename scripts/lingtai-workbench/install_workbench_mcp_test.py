@@ -177,6 +177,52 @@ class InstallWorkbenchMcpTest(unittest.TestCase):
             init = json.loads((agent_dir / "init.json").read_text(encoding="utf-8"))
             self.assertEqual(registry["args"], self.module.mcp_args(config))
             self.assertEqual(init["mcp"]["nokv-workbench"]["args"], registry["args"])
+            self.assertEqual(registry["template_arg_indices"], [])
+            self.assertEqual(
+                init["mcp"]["nokv-workbench"]["template_arg_indices"],
+                registry["template_arg_indices"],
+            )
+
+    def test_only_workbench_root_is_selected_for_agent_template_expansion(self):
+        config = self.lingtai_config(
+            workbench_root="/agents/{agent_id}/wb/{agent_address}/{agent_dir}",
+            workspace_id="literal-{agent_id}",
+            workspace_actor_id="literal-{agent_dir}",
+            workspace_grant=self.canonical_grant(
+                workspace_id="literal-{agent_id}",
+                actor_id="literal-{agent_dir}",
+            ),
+        )
+        args = self.module.mcp_args(config)
+        root_index = args.index("--workbench-root") + 1
+
+        self.assertEqual(self.module.template_arg_indices(config), [root_index])
+        self.assertEqual(
+            self.module.mcp_launch_semantics(config),
+            {
+                "args": args,
+                "template_arg_indices": [root_index],
+            },
+        )
+        self.assertNotIn(args.index("--workspace-id") + 1, [root_index])
+        self.assertNotIn(args.index("--workspace-actor-id") + 1, [root_index])
+
+    def test_literal_workbench_root_emits_explicit_empty_template_indices(self):
+        config = self.lingtai_config(
+            workbench_root="/literal/workbench",
+            workspace_id="literal-{agent_id}",
+            workspace_actor_id="literal-{agent_dir}",
+            workspace_grant=self.canonical_grant(
+                workspace_id="literal-{agent_id}",
+                actor_id="literal-{agent_dir}",
+            ),
+        )
+
+        self.assertEqual(self.module.template_arg_indices(config), [])
+        self.assertEqual(
+            self.module.registry_record(config)["template_arg_indices"], []
+        )
+        self.assertEqual(self.module.init_spec(config)["template_arg_indices"], [])
 
     def test_profile_and_workspace_tuple_fail_closed(self):
         with self.assertRaisesRegex(ValueError, "unsupported MCP profile"):
@@ -283,6 +329,7 @@ class InstallWorkbenchMcpTest(unittest.TestCase):
                 [record["name"] for record in registry], ["nokv-workbench"]
             )
             self.assertEqual(registry[0]["transport"], "stdio")
+            self.assertEqual(registry[0]["template_arg_indices"], [])
             self.assertEqual(
                 registry[0]["args"],
                 [
@@ -306,6 +353,9 @@ class InstallWorkbenchMcpTest(unittest.TestCase):
                 init["mcp"]["nokv-workbench"]["command"], "/repo/target/debug/nokv"
             )
             self.assertEqual(init["mcp"]["nokv-workbench"]["args"], registry[0]["args"])
+            self.assertEqual(
+                init["mcp"]["nokv-workbench"]["template_arg_indices"], []
+            )
 
     def test_install_is_idempotent(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -452,8 +502,14 @@ class InstallWorkbenchMcpTest(unittest.TestCase):
                 registry[0]["args"][-2:],
                 ["--workbench-root", "/agents/{agent_id}/wb"],
             )
+            root_index = registry[0]["args"].index("--workbench-root") + 1
+            self.assertEqual(registry[0]["template_arg_indices"], [root_index])
             init = json.loads((agent_dir / "init.json").read_text())
             self.assertEqual(init["mcp"]["nokv-workbench"]["args"], registry[0]["args"])
+            self.assertEqual(
+                init["mcp"]["nokv-workbench"]["template_arg_indices"],
+                [root_index],
+            )
 
     def test_resolve_agent_dir_rejects_ambiguous_non_coordinator_agents(self):
         with tempfile.TemporaryDirectory() as tmp:
