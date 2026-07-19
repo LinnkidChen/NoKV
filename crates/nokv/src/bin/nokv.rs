@@ -4041,6 +4041,33 @@ mod tests {
             .unwrap();
         assert_eq!(final_read["bytes"], "YWxwaGEKQkVUQQpnYW1tYQo=");
 
+        let rolled_back = mcp_runtime_for_options::<LocalObjectStore>(
+            &workbench_mcp_options(),
+            DEFAULT_UID,
+            DEFAULT_GID,
+        )
+        .unwrap();
+        let absent_after_rollback = rolled_back
+            .execute_tool(
+                &client,
+                "workspace_read",
+                &serde_json::json!({"path": "docs/a.txt", "format": "bytes"}),
+            )
+            .unwrap_err();
+        assert_eq!(absent_after_rollback["code"], "UnknownMcpTool");
+
+        let reactivated =
+            mcp_runtime_for_options::<LocalObjectStore>(&reader_options, DEFAULT_UID, DEFAULT_GID)
+                .unwrap();
+        let retained_after_reactivation = reactivated
+            .execute_tool(
+                &client,
+                "workspace_read",
+                &serde_json::json!({"path": "docs/a.txt", "format": "bytes"}),
+            )
+            .unwrap();
+        assert_eq!(retained_after_reactivation["bytes"], final_read["bytes"]);
+
         let mut other_options = lingtai_mcp_options();
         other_options.workspace_id = Some(s("other-workspace-integration-v1"));
         other_options.workspace_actor_id = Some(s("reader-c"));
