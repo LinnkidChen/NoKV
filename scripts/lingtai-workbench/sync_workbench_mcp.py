@@ -752,26 +752,92 @@ def config_from_lock(lock: dict[str, Any]) -> installer.InstallConfig:
     return config
 
 
+def non_root_agent_template_token_indices(
+    config: installer.InstallConfig,
+) -> tuple[int, ...]:
+    semantics = installer.mcp_launch_semantics(config)
+    allowed_indices = set(semantics["template_arg_indices"])
+    return tuple(
+        index
+        for index, argument in enumerate(semantics["args"])
+        if index not in allowed_indices
+        and any(token in argument for token in installer.AGENT_TEMPLATE_TOKENS)
+    )
+
+
 def validate_v1_operational_template_safety(
     config: installer.InstallConfig,
 ) -> None:
     """Reject v1 launches whose expand-all behavior can rewrite literal argv."""
 
-    semantics = installer.mcp_launch_semantics(config)
-    allowed_indices = set(semantics["template_arg_indices"])
-    unsafe = any(
-        index not in allowed_indices
-        and any(token in argument for token in installer.AGENT_TEMPLATE_TOKENS)
-        for index, argument in enumerate(semantics["args"])
-    )
-    if unsafe:
+    if non_root_agent_template_token_indices(config):
         raise ValueError(
             "legacy v1 workbench lock cannot be operationally checked because "
             "a non-Workbench-root launch argument contains an Agent template "
-            "token; run normal sync without --check using the exact current "
-            "profile and authorization tuple to atomically upgrade the Agent "
-            "registration and lock to v2"
+            "token; review and replace every affected value with a concrete "
+            "literal before migration. For LingTai identities, supply a coherent "
+            "concrete workspace/actor tuple and a canonical reissued grant bound "
+            "to that tuple; do not rerun unchanged normal sync or generically "
+            "expand the old token"
         )
+
+
+def validate_v1_to_v2_template_migration(
+    lock_path: Path,
+    desired_config: installer.InstallConfig,
+) -> None:
+    """Prevent an unsafe v1 expand-all value from silently becoming v2 literal."""
+
+    if not lock_path.exists():
+        return
+    existing_lock = read_lock(lock_path)
+    if existing_lock["schema"] != LOCK_SCHEMA_V1:
+        return
+    launch = existing_lock["launch"]
+    legacy_argv_fields = (
+        "server_bind",
+        "object_backend",
+        "s3_endpoint",
+        "s3_bucket",
+        "profile",
+        "workspace_id",
+        "workspace_actor_id",
+    )
+    existing_is_unsafe = any(
+        isinstance(launch.get(field), str)
+        and any(
+            token in launch[field] for token in installer.AGENT_TEMPLATE_TOKENS
+        )
+        for field in legacy_argv_fields
+    )
+    if not existing_is_unsafe:
+        return
+    if not non_root_agent_template_token_indices(desired_config):
+        return
+
+    identity_values = (
+        desired_config.workspace_id,
+        desired_config.workspace_actor_id,
+    )
+    identity_still_unsafe = desired_config.profile == "lingtai" and any(
+        isinstance(value, str)
+        and any(token in value for token in installer.AGENT_TEMPLATE_TOKENS)
+        for value in identity_values
+    )
+    if identity_still_unsafe:
+        raise ValueError(
+            "unsafe v1 LingTai identity migration refused before Agent mutation: "
+            "supply reviewed concrete workspace_id and workspace_actor_id values "
+            "without Agent template tokens plus a canonical reissued workspace "
+            "grant bound to that complete replacement tuple; do not generically "
+            "expand or reuse the old identity tuple"
+        )
+    raise ValueError(
+        "unsafe v1 launch migration refused before Agent mutation: the desired "
+        "v2 launch still contains an Agent template token outside the Workbench "
+        "root; supply reviewed concrete literal replacements for every affected "
+        "option and rerun normal sync"
+    )
 
 
 def verify_agent_configuration(
@@ -955,6 +1021,7 @@ def offline_agent_preflight(
         raise FileNotFoundError(f"LingTai agent directory does not exist: {agent_dir}")
     installer.read_registry(agent_dir / "mcp_registry.jsonl")
     installer.read_init(agent_dir / "init.json")
+    validate_v1_to_v2_template_migration(agent_dir / LOCK_NAME, config)
     expected_contract = expected_profile_contract_evidence(
         config.profile,
         role=workspace_role(config),
@@ -1562,6 +1629,8 @@ def main(argv: list[str]) -> int:
                     workbench_root=args.workbench_root,
                     source=source,
                 )
+                lock_path = agent_dir / LOCK_NAME
+                validate_v1_to_v2_template_migration(lock_path, config)
                 probe_config = installer.InstallConfig(
                     **{**config.__dict__, "workbench_root": root}
                 )
@@ -1577,7 +1646,6 @@ def main(argv: list[str]) -> int:
                     binary_size=runtime.size_bytes,
                     tools=tools,
                 )
-                lock_path = agent_dir / LOCK_NAME
                 validate_contract_transition(
                     lock_path,
                     new_profile=config.profile,

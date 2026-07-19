@@ -161,10 +161,14 @@ the exact ordered argv and `template_arg_indices` in one launch-semantics
 digest. Existing v1 locks remain readable under their legacy expand-all
 semantics. A v1 operational `--check` succeeds only when no non-Workbench-root
 argument contains a supported Agent token; otherwise it fails before launching
-the MCP and directs the operator to normal sync without printing the argument.
-A later normal synchronization still accepts that v1 state and upgrades the
-registration, init specification, and lock together to v2; a read-only
-`--check` never performs that migration.
+the MCP without printing the argument. Do not rerun unchanged normal sync: it
+also fails before Agent mutation rather than silently converting an old
+expand-all token into a v2 literal. Review and provide concrete replacements
+for every affected option. For `lingtai` workspace or actor identities, supply
+the complete concrete replacement tuple and a canonical reissued grant bound
+to that tuple; never derive it by generically expanding the old values. Normal
+sync then upgrades the registration, init specification, and lock together to
+v2; a read-only `--check` never performs that migration.
 
 By default the helper selects, in order, the only running coordinator, the only
 coordinator, or the only Agent. It performs that selection once; a later
@@ -413,8 +417,9 @@ change the kernel. That sequence removes the opaque workspace/actor arguments
 before the old expand-all implementation can see them. The ability to read a
 historical v1 lock is migration support; it is not evidence that an old kernel
 is safe with a new v2 registration. For the same reason, an unsafe v1 lock can
-be read by normal sync for migration but cannot receive an operationally valid
-`--check` result until that migration succeeds.
+be read by normal sync for migration but unchanged unsafe values are rejected.
+It cannot receive an operationally valid `--check` result until reviewed
+concrete replacements have been committed through the three-file transaction.
 
 After the first durable restore operation activates `restore_to_fork_v1`, the
 persistent metadata contains an active marker and allocator downgrade fence.

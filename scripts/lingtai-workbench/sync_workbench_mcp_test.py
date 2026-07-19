@@ -397,7 +397,7 @@ class SyncWorkbenchMcpTest(unittest.TestCase):
                 json.loads(registry_path.read_text(encoding="utf-8")),
             )
 
-    def test_v1_lingtai_check_rejects_opaque_template_tokens_then_sync_upgrades(self):
+    def test_v1_lingtai_identity_migration_requires_concrete_tuple_and_new_grant(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             source = self.make_source(root)
@@ -440,13 +440,54 @@ class SyncWorkbenchMcpTest(unittest.TestCase):
 
                 self.assertEqual(rejected[0], 1)
                 self.assertIn("legacy v1", rejected[2])
-                self.assertIn("normal sync without --check", rejected[2])
+                self.assertIn("concrete workspace/actor tuple", rejected[2])
+                self.assertIn("canonical reissued grant", rejected[2])
                 self.assertNotIn(workspace_id, rejected[2])
                 self.assertNotIn(actor_id, rejected[2])
                 self.assertNotIn(grant, rejected[2])
                 live_probe.assert_not_called()
 
-                upgraded = self.run_sync(*args)
+                state_paths = (
+                    agent / "mcp_registry.jsonl",
+                    agent / "init.json",
+                    agent / sync.LOCK_NAME,
+                )
+                before_rejected_sync = {
+                    path: path.read_bytes() for path in state_paths
+                }
+                with mock.patch.object(sync, "raw_tools_list") as migration_probe:
+                    unchanged = self.run_sync(*args)
+
+                self.assertEqual(unchanged[0], 1)
+                self.assertIn("identity migration refused", unchanged[2])
+                self.assertIn("canonical reissued workspace grant", unchanged[2])
+                self.assertNotIn(workspace_id, unchanged[2])
+                self.assertNotIn(actor_id, unchanged[2])
+                self.assertNotIn(grant, unchanged[2])
+                migration_probe.assert_not_called()
+                self.assertEqual(
+                    {path: path.read_bytes() for path in state_paths},
+                    before_rejected_sync,
+                )
+
+                replacement_workspace_id = "team-concrete"
+                replacement_actor_id = "actor-concrete"
+                replacement_grant = self.canonical_grant(
+                    workspace_id=replacement_workspace_id,
+                    actor_id=replacement_actor_id,
+                    role="writer",
+                    grant_id="grant_reissued",
+                )
+                replacement_args = self.sync_args(
+                    project,
+                    source,
+                    binary,
+                    profile="lingtai",
+                    workspace_id=replacement_workspace_id,
+                    actor_id=replacement_actor_id,
+                    grant=replacement_grant,
+                )
+                upgraded = self.run_sync(*replacement_args)
                 checked = self.run_sync(
                     "--project",
                     str(project),
@@ -470,33 +511,105 @@ class SyncWorkbenchMcpTest(unittest.TestCase):
             self.assertEqual(registry["template_arg_indices"], [root_index])
             self.assertNotIn(workspace_index, registry["template_arg_indices"])
             self.assertNotIn(actor_index, registry["template_arg_indices"])
-            self.assertEqual(registry["args"][workspace_index], workspace_id)
-            self.assertEqual(registry["args"][actor_index], actor_id)
-
-    def test_v1_check_rejects_template_token_in_other_non_root_argument(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            source = self.make_source(root)
-            project, agent = self.make_project(root)
-            binary = self.make_binary(root, tool_surface())
-            bucket = "bucket-{agent_address}"
-            args = (*self.sync_args(project, source, binary), "--s3-bucket", bucket)
-            installed = self.run_sync(*args)
-            self.assertEqual(installed[0], 0, installed[2])
-            self.rewrite_installed_state_as_v1(agent)
-
-            rejected = self.run_sync(
-                "--project",
-                str(project),
-                "--agent",
-                "coordinator",
-                "--check",
+            self.assertEqual(
+                registry["args"][workspace_index], replacement_workspace_id
             )
+            self.assertEqual(registry["args"][actor_index], replacement_actor_id)
+            self.assertIn(replacement_grant, registry["args"])
+            self.assertNotIn(grant, registry["args"])
 
-            self.assertEqual(rejected[0], 1)
-            self.assertIn("non-Workbench-root", rejected[2])
-            self.assertIn("normal sync without --check", rejected[2])
-            self.assertNotIn(bucket, rejected[2])
+    def test_v1_workbench_migration_requires_concrete_bucket_and_endpoint(self):
+        cases = (
+            ("--s3-bucket", "bucket-{agent_address}", "bucket-concrete"),
+            (
+                "--s3-endpoint",
+                "http://{agent_address}:9000",
+                "http://127.0.0.1:9000",
+            ),
+        )
+        for option, unsafe_value, concrete_value in cases:
+            with self.subTest(option=option), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                source = self.make_source(root)
+                project, agent = self.make_project(root)
+                binary = self.make_binary(root, tool_surface())
+                unsafe_args = (
+                    *self.sync_args(project, source, binary),
+                    option,
+                    unsafe_value,
+                )
+                installed = self.run_sync(*unsafe_args)
+                self.assertEqual(installed[0], 0, installed[2])
+                self.rewrite_installed_state_as_v1(agent)
+                state_paths = (
+                    agent / "mcp_registry.jsonl",
+                    agent / "init.json",
+                    agent / sync.LOCK_NAME,
+                )
+                before_rejected_sync = {
+                    path: path.read_bytes() for path in state_paths
+                }
+
+                preflight = self.run_sync(
+                    "--project",
+                    str(project),
+                    "--agent",
+                    "coordinator",
+                    "--preflight-only",
+                    option,
+                    unsafe_value,
+                )
+                checked = self.run_sync(
+                    "--project",
+                    str(project),
+                    "--agent",
+                    "coordinator",
+                    "--check",
+                )
+                with mock.patch.object(sync, "raw_tools_list") as migration_probe:
+                    unchanged = self.run_sync(*unsafe_args)
+
+                self.assertEqual(preflight[0], 1)
+                self.assertIn("launch migration refused", preflight[2])
+                self.assertNotIn(unsafe_value, preflight[2])
+                self.assertEqual(checked[0], 1)
+                self.assertIn("review and replace", checked[2])
+                self.assertNotIn(unsafe_value, checked[2])
+                self.assertEqual(unchanged[0], 1)
+                self.assertIn("launch migration refused", unchanged[2])
+                self.assertIn("concrete literal replacements", unchanged[2])
+                self.assertNotIn(unsafe_value, unchanged[2])
+                migration_probe.assert_not_called()
+                self.assertEqual(
+                    {path: path.read_bytes() for path in state_paths},
+                    before_rejected_sync,
+                )
+
+                replacement_args = (
+                    *self.sync_args(project, source, binary),
+                    option,
+                    concrete_value,
+                )
+                upgraded = self.run_sync(*replacement_args)
+                checked_v2 = self.run_sync(
+                    "--project",
+                    str(project),
+                    "--agent",
+                    "coordinator",
+                    "--check",
+                )
+
+                self.assertEqual(upgraded[0], 0, upgraded[2])
+                self.assertEqual(checked_v2[0], 0, checked_v2[2])
+                lock = json.loads(
+                    (agent / sync.LOCK_NAME).read_text(encoding="utf-8")
+                )
+                self.assertEqual(lock["schema"], sync.LOCK_SCHEMA_V2)
+                registry = json.loads(
+                    (agent / "mcp_registry.jsonl").read_text(encoding="utf-8")
+                )
+                self.assertIn(concrete_value, registry["args"])
+                self.assertNotIn(unsafe_value, registry["args"])
 
     def test_v2_check_rejects_template_index_and_semantics_digest_drift(self):
         with tempfile.TemporaryDirectory() as tmp:

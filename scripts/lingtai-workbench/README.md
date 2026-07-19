@@ -61,9 +61,12 @@ digest, concrete Agent root, and canonical MCP contract evidence including the
 exact `tools/list` order. New writes use
 `nokv.lingtai.workbench_lock.v2`. A v1 lock remains readable with its historical
 expand-all semantics. Its operational `--check` fails closed when any
-non-Workbench-root argument contains a supported Agent token, while normal sync
-still accepts the state and upgrades all three Agent files to v2; `--check`
-never rewrites it. Current
+non-Workbench-root argument contains a supported Agent token. Normal sync also
+rejects an unchanged unsafe value before Agent mutation; it upgrades all three
+Agent files to v2 only after every affected option has a reviewed concrete
+replacement. A `lingtai` identity replacement requires the complete concrete
+workspace/actor tuple and a canonical reissued grant bound to it. `--check`
+never rewrites state. Current
 `nokv.build_info.v2` identities record the crates.io registry identifier, exact
 crate version, and Holt package checksum from `Cargo.lock`; legacy
 `nokv.build_info.v1` identities retain the git commit and remain checkable
