@@ -155,6 +155,20 @@ pub struct AppendOutcome {
     pub created: bool,
 }
 
+/// Whether an artifact-write error proves that its metadata commit did not
+/// happen.
+///
+/// Callers may retry or discard staged data only for
+/// [`ArtifactWriteCommitStatus::DefinitelyNotCommitted`]. The conservative
+/// [`ArtifactWriteCommitStatus::CommitMayHaveSucceeded`] status requires
+/// reconciliation because a lost or undecodable response can arrive after the
+/// metadata transaction committed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ArtifactWriteCommitStatus {
+    DefinitelyNotCommitted,
+    CommitMayHaveSucceeded,
+}
+
 #[derive(Clone, Debug)]
 pub struct PreparedPathRangeBatch {
     tasks: Vec<PreparedRangeBatchIntoRequestTask>,
@@ -261,6 +275,30 @@ where
         options: NamespaceListOptions,
     ) -> Result<NamespaceListPage, ClientError> {
         self.metadata.namespace_list_page(path, options)
+    }
+
+    /// List one namespace page from an explicit direct-child offset.
+    ///
+    /// This keeps the storage cursor encoding inside `nokv-client`: offset zero
+    /// starts from the storage-owned initial cursor, while positive offsets are
+    /// checked against the platform cursor width before being encoded. The
+    /// returned page is passed through unchanged, including its `snapshot_id`.
+    pub fn namespace_list_offset_page(
+        &self,
+        path: &str,
+        offset: u64,
+        limit: usize,
+    ) -> Result<NamespaceListPage, ClientError> {
+        let offset = usize::try_from(offset).map_err(|_| {
+            ClientError::Protocol("namespace list offset exceeds platform limit".to_owned())
+        })?;
+        self.namespace_list_page(
+            path,
+            NamespaceListOptions {
+                cursor: (offset != 0).then(|| offset.to_string()),
+                limit,
+            },
+        )
     }
 
     pub fn find_paths(
@@ -1891,7 +1929,9 @@ where
                     // metadata transaction committed. Deleting in that case
                     // would turn a successful publish into a dangling object
                     // reference, so only clean up explicit pre-commit rejects.
-                    if artifact_publish_was_definitively_rejected(&err) {
+                    if artifact_write_commit_status(&err)
+                        == ArtifactWriteCommitStatus::DefinitelyNotCommitted
+                    {
                         // Keep the metadata error that drives the caller's
                         // conflict classifier; terminal cleanup remains
                         // best-effort after no new generation will be minted.
@@ -1961,7 +2001,9 @@ where
                     refreshes += 1;
                 }
                 Err(err) => {
-                    if artifact_publish_was_definitively_rejected(&err) {
+                    if artifact_write_commit_status(&err)
+                        == ArtifactWriteCommitStatus::DefinitelyNotCommitted
+                    {
                         if expected_generation.is_some() {
                             // Preserve the compare-and-swap failure classification.
                             let _ = self.objects.delete_staged(&staged);
@@ -2016,7 +2058,9 @@ where
                     return Err(err);
                 }
                 Err(err) => {
-                    if artifact_publish_was_definitively_rejected(&err) {
+                    if artifact_write_commit_status(&err)
+                        == ArtifactWriteCommitStatus::DefinitelyNotCommitted
+                    {
                         self.objects
                             .delete_staged(&staged)
                             .map_err(ClientError::Object)?;
@@ -2318,15 +2362,34 @@ fn is_stale_prepared_object_gc_epoch(err: &ClientError) -> bool {
     )
 }
 
-/// Return true only when the server has authoritatively rejected the publish
-/// before committing metadata. Transport/protocol failures and post-commit
-/// sync-log failures are deliberately absent: keeping an unreachable staged
-/// generation is safe, while deleting a possibly live generation is not.
-fn artifact_publish_was_definitively_rejected(err: &ClientError) -> bool {
-    match err {
+/// Classify whether an artifact-write error proves that its metadata commit did
+/// not happen.
+///
+/// Local validation, object staging, and authoritative metadata rejections are
+/// definite non-commits. Transport/protocol failures, ownership handoff, and
+/// post-commit sync-log failures remain uncertain: retaining an unreachable
+/// staged generation is safe, while deleting a possibly live generation is
+/// not.
+pub fn artifact_write_commit_status(err: &ClientError) -> ArtifactWriteCommitStatus {
+    let definitely_not_committed = match err {
+        ClientError::EmptyPath
+        | ClientError::RelativePath
+        | ClientError::ParentTraversal
+        | ClientError::InvalidArtifactPath(_)
+        | ClientError::ArtifactIsDirectory(_)
+        | ClientError::ArtifactIsFile(_)
+        | ClientError::InvalidName(_)
+        | ClientError::RootHasNoParent
+        | ClientError::NotFound(_)
+        | ClientError::LockConflict(_)
+        | ClientError::Object(_) => true,
         ClientError::Metadata(err) => metad_publish_was_definitively_rejected(err),
-        ClientError::LockConflict(_) | ClientError::Object(_) => true,
-        _ => false,
+        ClientError::Io(_) | ClientError::Protocol(_) => false,
+    };
+    if definitely_not_committed {
+        ArtifactWriteCommitStatus::DefinitelyNotCommitted
+    } else {
+        ArtifactWriteCommitStatus::CommitMayHaveSucceeded
     }
 }
 
@@ -2346,7 +2409,8 @@ fn metad_publish_was_definitively_rejected(err: &nokv_meta::MetadError) -> bool 
         nokv_meta::MetadError::PublishArtifactFailed { source, .. } => {
             metad_publish_was_definitively_rejected(source)
         }
-        nokv_meta::MetadError::BodySizeMismatch { .. }
+        nokv_meta::MetadError::Object(_)
+        | nokv_meta::MetadError::BodySizeMismatch { .. }
         | nokv_meta::MetadError::InvalidPreparedArtifact(_)
         | nokv_meta::MetadError::StalePreparedArtifactObjectGcEpoch { .. }
         | nokv_meta::MetadError::StaleBodyGeneration { .. }
@@ -2773,6 +2837,52 @@ mod tests {
     }
 
     #[test]
+    fn namespace_list_offset_page_encodes_offset_and_preserves_snapshot_id() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let responses = [
+            response_body(
+                r#"{"ok":true,"result":{"type":"namespace_list_page","page":{"path":"/shared","evidence":"nokv-native:///shared","snapshot_id":41,"entry_count":7,"entries":[],"next_cursor":"3","truncated":true}}}"#,
+            ),
+            response_body(
+                r#"{"ok":true,"result":{"type":"namespace_list_page","page":{"path":"/shared","evidence":"nokv-native:///shared","snapshot_id":42,"entry_count":7,"entries":[],"next_cursor":null,"truncated":false}}}"#,
+            ),
+        ];
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut magic = [0_u8; FRAMED_RPC_MAGIC.len()];
+            stream.read_exact(&mut magic).unwrap();
+            assert_eq!(&magic, FRAMED_RPC_MAGIC);
+            for ((expected_cursor, expected_limit), body) in
+                [(None, 3_u64), (Some("7".to_owned()), 2_u64)]
+                    .into_iter()
+                    .zip(responses)
+            {
+                let (request_id, flags, request) = read_frame(&mut stream).unwrap();
+                let request = decode_request(&request).expect("framed request is metadata rpc");
+                assert_eq!(
+                    request,
+                    MetadataRpcRequest::ListPage {
+                        path: "/shared".to_owned(),
+                        cursor: expected_cursor,
+                        limit: expected_limit,
+                    }
+                );
+                write_frame(&mut stream, request_id, flags, &body).unwrap();
+            }
+        });
+
+        let client = NoKvFsClient::connect(addr, MemoryObjectStore::new());
+        let first = client.namespace_list_offset_page("/shared", 0, 3).unwrap();
+        assert_eq!(first.snapshot_id, Some(41));
+        assert_eq!(first.next_cursor.as_deref(), Some("3"));
+        let continuation = client.namespace_list_offset_page("/shared", 7, 2).unwrap();
+        assert_eq!(continuation.snapshot_id, Some(42));
+        assert_eq!(continuation.path, "/shared");
+        server.join().unwrap();
+    }
+
+    #[test]
     fn artifact_write_conflict_classifies_transient_write_races() {
         // The two shapes a lost write race decodes to over the wire.
         assert!(is_artifact_write_conflict(&ClientError::Metadata(
@@ -2811,7 +2921,12 @@ mod tests {
     }
 
     #[test]
-    fn artifact_publish_cleanup_classifier_fails_closed_for_uncertain_outcomes() {
+    fn artifact_write_commit_status_fails_closed_for_uncertain_outcomes() {
+        let validation = ClientError::InvalidArtifactPath("relative".to_owned());
+        let object = ClientError::Object(ObjectError::Backend("upload failed".to_owned()));
+        let nested_object = ClientError::Metadata(nokv_meta::MetadError::Object(
+            ObjectError::Backend("embedded upload failed".to_owned()),
+        ));
         let predicate = ClientError::Metadata(nokv_meta::MetadError::Metadata(
             nokv_meta::MetadataError::PredicateFailed,
         ));
@@ -2825,11 +2940,20 @@ mod tests {
                 committed: false,
                 message: "injected".to_owned(),
             });
-        assert!(artifact_publish_was_definitively_rejected(&predicate));
-        assert!(artifact_publish_was_definitively_rejected(&stale));
-        assert!(artifact_publish_was_definitively_rejected(
-            &rejected_before_commit
-        ));
+        for rejected in [
+            validation,
+            object,
+            nested_object,
+            predicate,
+            stale,
+            rejected_before_commit,
+        ] {
+            assert_eq!(
+                artifact_write_commit_status(&rejected),
+                ArtifactWriteCommitStatus::DefinitelyNotCommitted,
+                "authoritative rejection must be classified as a definite non-commit: {rejected}"
+            );
+        }
 
         let backend = ClientError::Metadata(nokv_meta::MetadError::Metadata(
             nokv_meta::MetadataError::Backend("outcome unknown".to_owned()),
@@ -2839,17 +2963,11 @@ mod tests {
                 committed: true,
                 message: "injected".to_owned(),
             });
-        assert!(!artifact_publish_was_definitively_rejected(&backend));
-        assert!(!artifact_publish_was_definitively_rejected(
-            &failed_after_commit
-        ));
-        assert!(!artifact_publish_was_definitively_rejected(
-            &ClientError::Io("response lost".to_owned())
-        ));
-        assert!(!artifact_publish_was_definitively_rejected(
-            &ClientError::Protocol("response undecodable".to_owned())
-        ));
-        for ownership_error in [
+        for uncertain in [
+            backend,
+            failed_after_commit,
+            ClientError::Io("response lost".to_owned()),
+            ClientError::Protocol("response undecodable".to_owned()),
             ClientError::Metadata(nokv_meta::MetadError::StaleOwnerEpoch {
                 owner_epoch: 7,
                 required_epoch: 8,
@@ -2863,9 +2981,10 @@ mod tests {
                 endpoint: None,
             }),
         ] {
-            assert!(
-                !artifact_publish_was_definitively_rejected(&ownership_error),
-                "ownership errors can surface after metadata commit: {ownership_error}"
+            assert_eq!(
+                artifact_write_commit_status(&uncertain),
+                ArtifactWriteCommitStatus::CommitMayHaveSucceeded,
+                "uncertain errors can surface after metadata commit: {uncertain}"
             );
         }
     }

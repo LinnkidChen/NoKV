@@ -2,6 +2,8 @@
 
 #[path = "nokv/mcp_runtime.rs"]
 mod mcp_runtime;
+#[path = "nokv/shared_workspace_provider.rs"]
+mod shared_workspace_provider;
 #[path = "nokv/workbench_mcp.rs"]
 mod workbench_mcp;
 
@@ -187,6 +189,10 @@ struct McpCliOptions {
     profile: McpProfile,
     workbench_root: Option<String>,
     workbench_max_bytes: usize,
+    workspace_id: Option<String>,
+    workspace_actor_id: Option<String>,
+    workspace_dev_membership: Option<String>,
+    workspace_grant: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -244,6 +250,10 @@ impl Default for McpCliOptions {
             profile: McpProfile::Agent,
             workbench_root: None,
             workbench_max_bytes: workbench_mcp::DEFAULT_WORKBENCH_MAX_BYTES,
+            workspace_id: None,
+            workspace_actor_id: None,
+            workspace_dev_membership: None,
+            workspace_grant: None,
         }
     }
 }
@@ -1202,6 +1212,10 @@ fn parse_archive_prefix(raw: &str, option: &str) -> Result<String, CliError> {
 fn parse_mcp_args(args: &[String]) -> Result<McpCliOptions, CliError> {
     let mut options = McpCliOptions::default();
     let mut saw_workbench_max_bytes = false;
+    let mut saw_workspace_id = false;
+    let mut saw_workspace_actor_id = false;
+    let mut saw_workspace_dev_membership = false;
+    let mut saw_workspace_grant = false;
     let mut index = 1;
     while index < args.len() {
         match args[index].as_str() {
@@ -1230,6 +1244,52 @@ fn parse_mcp_args(args: &[String]) -> Result<McpCliOptions, CliError> {
                     "workbench-max-bytes",
                 )?;
             }
+            "--workspace-id" => {
+                if saw_workspace_id {
+                    return Err(CliError::InvalidOption {
+                        field: "workspace-id",
+                        value: "duplicate option".to_owned(),
+                    });
+                }
+                saw_workspace_id = true;
+                index += 1;
+                options.workspace_id = Some(value(args, index, "--workspace-id")?.to_owned());
+            }
+            "--workspace-actor-id" => {
+                if saw_workspace_actor_id {
+                    return Err(CliError::InvalidOption {
+                        field: "workspace-actor-id",
+                        value: "duplicate option".to_owned(),
+                    });
+                }
+                saw_workspace_actor_id = true;
+                index += 1;
+                options.workspace_actor_id =
+                    Some(value(args, index, "--workspace-actor-id")?.to_owned());
+            }
+            "--workspace-dev-membership" => {
+                if saw_workspace_dev_membership {
+                    return Err(CliError::InvalidOption {
+                        field: "workspace-dev-membership",
+                        value: "duplicate option".to_owned(),
+                    });
+                }
+                saw_workspace_dev_membership = true;
+                index += 1;
+                options.workspace_dev_membership =
+                    Some(value(args, index, "--workspace-dev-membership")?.to_owned());
+            }
+            "--workspace-grant" => {
+                if saw_workspace_grant {
+                    return Err(CliError::InvalidOption {
+                        field: "workspace-grant",
+                        value: "duplicate option".to_owned(),
+                    });
+                }
+                saw_workspace_grant = true;
+                index += 1;
+                options.workspace_grant = Some(value(args, index, "--workspace-grant")?.to_owned());
+            }
             other => return Err(CliError::UnknownOption(other.to_owned())),
         }
         index += 1;
@@ -1244,6 +1304,38 @@ fn parse_mcp_args(args: &[String]) -> Result<McpCliOptions, CliError> {
             field: "mcp profile",
             value: "workbench options require --profile workbench".to_owned(),
         });
+    }
+    let has_workspace_options = options.workspace_id.is_some()
+        || options.workspace_actor_id.is_some()
+        || options.workspace_dev_membership.is_some()
+        || options.workspace_grant.is_some();
+    if options.profile != McpProfile::Lingtai && has_workspace_options {
+        return Err(CliError::InvalidOption {
+            field: "mcp profile",
+            value: "workspace options require --profile lingtai".to_owned(),
+        });
+    }
+    if options.profile == McpProfile::Lingtai {
+        if options.workspace_id.is_none() {
+            return Err(CliError::MissingArgument("workspace id"));
+        }
+        if options.workspace_actor_id.is_none() {
+            return Err(CliError::MissingArgument("workspace actor id"));
+        }
+        match (
+            options.workspace_dev_membership.is_some(),
+            options.workspace_grant.is_some(),
+        ) {
+            (false, false) => return Err(CliError::MissingArgument("workspace membership")),
+            (true, true) => {
+                return Err(CliError::InvalidOption {
+                    field: "workspace membership",
+                    value: "development membership and launcher grant are mutually exclusive"
+                        .to_owned(),
+                });
+            }
+            _ => {}
+        }
     }
     Ok(options)
 }
@@ -1888,8 +1980,33 @@ where
 {
     let providers: Vec<Box<dyn mcp_runtime::McpToolProvider<O>>> = match options.profile {
         McpProfile::Agent => vec![Box::new(mcp_runtime::AgentMcpProvider)],
-        McpProfile::Workbench | McpProfile::Lingtai => {
-            workbench_provider_composition(options, uid, gid)?
+        McpProfile::Workbench => workbench_provider_composition(options, uid, gid)?,
+        McpProfile::Lingtai => {
+            let mut providers = workbench_provider_composition(options, uid, gid)?;
+            let shared = shared_workspace_provider::SharedWorkspaceProvider::new(
+                shared_workspace_provider::SharedWorkspaceProviderOptions {
+                    workspace_id: options.workspace_id.clone().ok_or_else(|| {
+                        std::io::Error::new(
+                            std::io::ErrorKind::InvalidInput,
+                            "lingtai MCP profile requires a workspace id",
+                        )
+                    })?,
+                    actor_id: options.workspace_actor_id.clone().ok_or_else(|| {
+                        std::io::Error::new(
+                            std::io::ErrorKind::InvalidInput,
+                            "lingtai MCP profile requires a workspace actor id",
+                        )
+                    })?,
+                    dev_membership: options.workspace_dev_membership.clone(),
+                    launcher_grant: options.workspace_grant.clone(),
+                    max_bytes: options.workbench_max_bytes,
+                    uid,
+                    gid,
+                },
+            )
+            .map_err(|err| std::io::Error::new(std::io::ErrorKind::InvalidInput, err))?;
+            providers.push(Box::new(shared));
+            providers
         }
     };
     mcp_runtime_from_providers(providers)
@@ -2303,6 +2420,40 @@ mod tests {
 
     fn s(value: &str) -> String {
         value.to_owned()
+    }
+
+    fn canonical_json_value(value: serde_json::Value) -> serde_json::Value {
+        match value {
+            serde_json::Value::Array(values) => {
+                serde_json::Value::Array(values.into_iter().map(canonical_json_value).collect())
+            }
+            serde_json::Value::Object(values) => {
+                let mut fields = values.into_iter().collect::<Vec<_>>();
+                fields.sort_by(|left, right| left.0.as_bytes().cmp(right.0.as_bytes()));
+                serde_json::Value::Object(
+                    fields
+                        .into_iter()
+                        .map(|(key, value)| (key, canonical_json_value(value)))
+                        .collect(),
+                )
+            }
+            other => other,
+        }
+    }
+
+    fn tool_definitions_digest(definitions: &[nokv_agent::AgentToolDefinition]) -> String {
+        let payload = definitions
+            .iter()
+            .map(|definition| {
+                serde_json::json!({
+                    "name": definition.name,
+                    "description": definition.description,
+                    "inputSchema": definition.parameters,
+                })
+            })
+            .collect::<Vec<_>>();
+        let bytes = serde_json::to_vec(&canonical_json_value(serde_json::json!(payload))).unwrap();
+        format!("{:x}", Sha256::digest(bytes))
     }
 
     struct FakeMcpProvider {
@@ -3231,6 +3382,10 @@ mod tests {
                 profile: McpProfile::Workbench,
                 workbench_root: Some(s("/workbenches")),
                 workbench_max_bytes: workbench_mcp::DEFAULT_WORKBENCH_MAX_BYTES,
+                workspace_id: None,
+                workspace_actor_id: None,
+                workspace_dev_membership: None,
+                workspace_grant: None,
             })
         );
         assert_eq!(
@@ -3249,6 +3404,10 @@ mod tests {
                 profile: McpProfile::Workbench,
                 workbench_root: Some(s("/workbenches")),
                 workbench_max_bytes: 1024,
+                workspace_id: None,
+                workspace_actor_id: None,
+                workspace_dev_membership: None,
+                workspace_grant: None,
             })
         );
         assert!(matches!(
@@ -3298,6 +3457,12 @@ mod tests {
             s("/workbenches/"),
             s("--workbench-max-bytes"),
             s("1024"),
+            s("--workspace-id"),
+            s("team-alpha"),
+            s("--workspace-actor-id"),
+            s("agent-7"),
+            s("--workspace-dev-membership"),
+            s("reader"),
         ])
         .unwrap()
         .1;
@@ -3307,6 +3472,10 @@ mod tests {
                 profile: McpProfile::Lingtai,
                 workbench_root: Some(s("/workbenches")),
                 workbench_max_bytes: 1024,
+                workspace_id: Some(s("team-alpha")),
+                workspace_actor_id: Some(s("agent-7")),
+                workspace_dev_membership: Some(s("reader")),
+                workspace_grant: None,
             })
         );
         assert!(matches!(
@@ -3348,6 +3517,88 @@ mod tests {
         let help = String::from_utf8(help).unwrap();
         assert!(help.contains("mcp [--profile agent|workbench]"));
         assert!(!help.to_ascii_lowercase().contains("lingtai"));
+        assert!(!help.contains("workspace-id"));
+        assert!(!help.contains("workspace-grant"));
+    }
+
+    #[test]
+    fn lingtai_workspace_tuple_is_complete_singleton_and_profile_scoped() {
+        let base = vec![
+            s("mcp"),
+            s("--profile"),
+            s("lingtai"),
+            s("--workbench-root"),
+            s("/workbenches"),
+        ];
+        assert!(matches!(
+            parse(base.clone()),
+            Err(CliError::MissingArgument("workspace id"))
+        ));
+
+        let mut missing_actor = base.clone();
+        missing_actor.extend([s("--workspace-id"), s("team-alpha")]);
+        assert!(matches!(
+            parse(missing_actor),
+            Err(CliError::MissingArgument("workspace actor id"))
+        ));
+
+        let mut missing_membership = base.clone();
+        missing_membership.extend([
+            s("--workspace-id"),
+            s("team-alpha"),
+            s("--workspace-actor-id"),
+            s("agent-7"),
+        ]);
+        assert!(matches!(
+            parse(missing_membership.clone()),
+            Err(CliError::MissingArgument("workspace membership"))
+        ));
+
+        let mut conflicting = missing_membership.clone();
+        conflicting.extend([
+            s("--workspace-dev-membership"),
+            s("reader"),
+            s("--workspace-grant"),
+            s("opaque"),
+        ]);
+        assert!(matches!(
+            parse(conflicting),
+            Err(CliError::InvalidOption {
+                field: "workspace membership",
+                ..
+            })
+        ));
+
+        let mut duplicate = missing_membership;
+        duplicate.extend([
+            s("--workspace-id"),
+            s("team-alpha"),
+            s("--workspace-dev-membership"),
+            s("reader"),
+        ]);
+        assert!(matches!(
+            parse(duplicate),
+            Err(CliError::InvalidOption {
+                field: "workspace-id",
+                ..
+            })
+        ));
+
+        assert!(matches!(
+            parse(vec![
+                s("mcp"),
+                s("--profile"),
+                s("workbench"),
+                s("--workbench-root"),
+                s("/workbenches"),
+                s("--workspace-id"),
+                s("team-alpha"),
+            ]),
+            Err(CliError::InvalidOption {
+                field: "mcp profile",
+                ..
+            })
+        ));
     }
 
     #[test]
@@ -3357,6 +3608,10 @@ mod tests {
                 profile: McpProfile::Lingtai,
                 workbench_root: None,
                 workbench_max_bytes: workbench_mcp::DEFAULT_WORKBENCH_MAX_BYTES,
+                workspace_id: Some(s("team-alpha")),
+                workspace_actor_id: Some(s("agent-7")),
+                workspace_dev_membership: Some(s("reader")),
+                workspace_grant: None,
             },
             DEFAULT_UID,
             DEFAULT_GID,
@@ -3373,6 +3628,10 @@ mod tests {
             profile: McpProfile::Workbench,
             workbench_root: Some(s("/workbenches")),
             workbench_max_bytes: workbench_mcp::DEFAULT_WORKBENCH_MAX_BYTES,
+            workspace_id: None,
+            workspace_actor_id: None,
+            workspace_dev_membership: None,
+            workspace_grant: None,
         }
     }
 
@@ -3381,7 +3640,17 @@ mod tests {
             profile: McpProfile::Lingtai,
             workbench_root: Some(s("/workbenches")),
             workbench_max_bytes: workbench_mcp::DEFAULT_WORKBENCH_MAX_BYTES,
+            workspace_id: Some(s("test-workspace")),
+            workspace_actor_id: Some(s("test-actor")),
+            workspace_dev_membership: Some(s("reader")),
+            workspace_grant: None,
         }
+    }
+
+    fn lingtai_writer_mcp_options() -> McpCliOptions {
+        let mut options = lingtai_mcp_options();
+        options.workspace_dev_membership = Some(s("writer"));
+        options
     }
 
     #[test]
@@ -3401,11 +3670,23 @@ mod tests {
         let client = session.direct_client();
 
         assert_eq!(workbench_runtime.provider_names(), vec!["workbench"]);
-        assert_eq!(lingtai_runtime.provider_names(), vec!["workbench"]);
         assert_eq!(
-            workbench_runtime.tool_definitions(&client).unwrap(),
-            lingtai_runtime.tool_definitions(&client).unwrap(),
-            "the temporary alias must preserve names, descriptions, schemas, and order"
+            lingtai_runtime.provider_names(),
+            vec!["workbench", "shared_workspace"]
+        );
+        let workbench_definitions = workbench_runtime.tool_definitions(&client).unwrap();
+        let lingtai_definitions = lingtai_runtime.tool_definitions(&client).unwrap();
+        assert_eq!(
+            &lingtai_definitions[..workbench_definitions.len()],
+            workbench_definitions.as_slice(),
+            "LingTai must retain the exact ordered Workbench prefix"
+        );
+        assert_eq!(
+            lingtai_definitions[workbench_definitions.len()..]
+                .iter()
+                .map(|definition| definition.name)
+                .collect::<Vec<_>>(),
+            vec!["workspace_list", "workspace_read"]
         );
 
         let success_args = serde_json::json!({});
@@ -3432,10 +3713,431 @@ mod tests {
         assert_eq!(workbench_error, lingtai_error);
         assert_eq!(workbench_error["status"], "error");
 
-        // Once SharedWorkspaceProvider is added only to the LingTai profile,
-        // narrow this assertion to the common Workbench subset and keep the
-        // shared-runtime invariants above; do not preserve whole-profile
-        // equality forever.
+        assert_eq!(workbench_definitions.len(), 18);
+        assert_eq!(lingtai_definitions.len(), 20);
+    }
+
+    #[test]
+    fn lingtai_role_profile_definition_digests_are_stable() {
+        let session = SharedWorkbenchMcpSession::acquire();
+        let client = session.direct_client();
+        let reader_runtime = mcp_runtime_for_options::<LocalObjectStore>(
+            &lingtai_mcp_options(),
+            DEFAULT_UID,
+            DEFAULT_GID,
+        )
+        .unwrap();
+        let writer_runtime = mcp_runtime_for_options::<LocalObjectStore>(
+            &lingtai_writer_mcp_options(),
+            DEFAULT_UID,
+            DEFAULT_GID,
+        )
+        .unwrap();
+        let reader = reader_runtime.tool_definitions(&client).unwrap();
+        let writer = writer_runtime.tool_definitions(&client).unwrap();
+        assert_eq!(reader.len(), 20);
+        assert_eq!(writer.len(), 23);
+
+        let reader_digest = tool_definitions_digest(&reader);
+        let writer_digest = tool_definitions_digest(&writer);
+        assert_eq!(
+            reader_digest,
+            "e008fc0a776c3348ec0ddae3db9eebc01ea37eed3b723a86004eae110d94fc2f"
+        );
+        assert_eq!(
+            writer_digest,
+            "1e3f09616286dcd8069f91319bfaee356ce79bf705f0806a38b38b7b972989f1"
+        );
+    }
+
+    #[test]
+    fn lingtai_workspace_roles_filter_advertisement_but_preserve_static_routing() {
+        let session = SharedWorkbenchMcpSession::acquire();
+        let client = session.direct_client();
+        let reader_runtime = mcp_runtime_for_options::<LocalObjectStore>(
+            &lingtai_mcp_options(),
+            DEFAULT_UID,
+            DEFAULT_GID,
+        )
+        .unwrap();
+        let writer_runtime = mcp_runtime_for_options::<LocalObjectStore>(
+            &lingtai_writer_mcp_options(),
+            DEFAULT_UID,
+            DEFAULT_GID,
+        )
+        .unwrap();
+        let reader = reader_runtime.tool_definitions(&client).unwrap();
+        let writer = writer_runtime.tool_definitions(&client).unwrap();
+
+        assert_eq!(
+            reader[reader.len() - 2..]
+                .iter()
+                .map(|definition| definition.name)
+                .collect::<Vec<_>>(),
+            vec!["workspace_list", "workspace_read"]
+        );
+        assert_eq!(
+            writer[writer.len() - 5..]
+                .iter()
+                .map(|definition| definition.name)
+                .collect::<Vec<_>>(),
+            vec![
+                "workspace_list",
+                "workspace_read",
+                "workspace_put_file",
+                "workspace_edit",
+                "workspace_append",
+            ]
+        );
+
+        let denied = reader_runtime
+            .execute_tool(&client, "workspace_put_file", &serde_json::json!({}))
+            .expect_err("reader direct write must route to its static owner and fail closed");
+        assert_eq!(denied["code"], "WorkspacePermissionDenied");
+
+        let workbench = mcp_runtime_for_options::<LocalObjectStore>(
+            &workbench_mcp_options(),
+            DEFAULT_UID,
+            DEFAULT_GID,
+        )
+        .unwrap();
+        let unknown = workbench
+            .execute_tool(&client, "workspace_list", &serde_json::json!({}))
+            .expect_err("workbench must not own workspace tools");
+        assert_eq!(unknown["code"], "UnknownMcpTool");
+    }
+
+    #[test]
+    fn lingtai_shared_workspace_is_visible_across_actors_and_jailed_by_workspace() {
+        use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+        use base64::Engine as _;
+        use nokv_types::{DentryName, SpecialNodeSpec};
+
+        let session = SharedWorkbenchMcpSession::acquire();
+        let client = session.direct_client();
+        let workspace_id = "shared-provider-integration-v1";
+
+        let mut writer_options = lingtai_writer_mcp_options();
+        writer_options.workspace_id = Some(s(workspace_id));
+        writer_options.workspace_actor_id = Some(s("writer-a"));
+        let writer =
+            mcp_runtime_for_options::<LocalObjectStore>(&writer_options, DEFAULT_UID, DEFAULT_GID)
+                .unwrap();
+
+        let put_a_args = serde_json::json!({
+            "path": "docs/a.txt",
+            "operation_id": "put_a",
+            "base_generation": null,
+            "text": "alpha\nbeta\n",
+        });
+        let put_a = writer
+            .execute_tool(&client, "workspace_put_file", &put_a_args)
+            .unwrap();
+        assert_eq!(put_a["created"], true);
+        assert_eq!(put_a["deduplicated"], false);
+        let put_a_deduplicated = writer
+            .execute_tool(&client, "workspace_put_file", &put_a_args)
+            .unwrap();
+        assert_eq!(put_a_deduplicated["deduplicated"], true);
+        assert_eq!(put_a_deduplicated["generation"], put_a["generation"]);
+        let put_identity_conflict = writer
+            .execute_tool(
+                &client,
+                "workspace_put_file",
+                &serde_json::json!({
+                    "path": "docs/a.txt",
+                    "operation_id": "put_a",
+                    "base_generation": null,
+                    "text": "different bytes",
+                }),
+            )
+            .unwrap_err();
+        assert_eq!(
+            put_identity_conflict["code"],
+            "WorkspaceWriteOutcomeUnknown"
+        );
+        assert_eq!(put_identity_conflict["details"]["path"], "docs/a.txt");
+
+        writer
+            .execute_tool(
+                &client,
+                "workspace_put_file",
+                &serde_json::json!({
+                    "path": "docs/b.txt",
+                    "operation_id": "put_b",
+                    "base_generation": null,
+                    "text": "bravo\n",
+                }),
+            )
+            .unwrap();
+
+        let mut reader_options = lingtai_mcp_options();
+        reader_options.workspace_id = Some(s(workspace_id));
+        reader_options.workspace_actor_id = Some(s("reader-b"));
+        let reader =
+            mcp_runtime_for_options::<LocalObjectStore>(&reader_options, DEFAULT_UID, DEFAULT_GID)
+                .unwrap();
+        let first_page = reader
+            .execute_tool(
+                &client,
+                "workspace_list",
+                &serde_json::json!({"path": "docs", "limit": 1}),
+            )
+            .unwrap();
+        assert_eq!(first_page["page_entry_count"], 1);
+        assert_eq!(first_page["total_entry_count"], 2);
+        assert_eq!(first_page["entries"][0]["path"], "docs/a.txt");
+        let second_page = reader
+            .execute_tool(
+                &client,
+                "workspace_list",
+                &serde_json::json!({
+                    "path": "docs",
+                    "offset": first_page["next_offset"],
+                    "if_read_version": first_page["read_version"],
+                    "limit": 1,
+                }),
+            )
+            .unwrap();
+        assert_eq!(second_page["entries"][0]["path"], "docs/b.txt");
+        assert_eq!(second_page["next_offset"], serde_json::Value::Null);
+        let wrong_version = first_page["read_version"].as_u64().unwrap() + 1;
+        let stale_list = reader
+            .execute_tool(
+                &client,
+                "workspace_list",
+                &serde_json::json!({
+                    "path": "docs",
+                    "offset": 1,
+                    "if_read_version": wrong_version,
+                    "limit": 1,
+                }),
+            )
+            .unwrap_err();
+        assert_eq!(stale_list["code"], "WorkspaceConflict");
+
+        let read_a = reader
+            .execute_tool(
+                &client,
+                "workspace_read",
+                &serde_json::json!({"path": "docs/a.txt", "format": "bytes"}),
+            )
+            .unwrap();
+        assert_eq!(read_a["bytes"], "YWxwaGEKYmV0YQo=");
+
+        let append_args = serde_json::json!({
+            "path": "docs/a.txt",
+            "operation_id": "append_a",
+            "base_generation": put_a["generation"],
+            "text": "gamma\n",
+        });
+        let appended = writer
+            .execute_tool(&client, "workspace_append", &append_args)
+            .unwrap();
+        assert_eq!(appended["created"], false);
+        let append_deduplicated = writer
+            .execute_tool(&client, "workspace_append", &append_args)
+            .unwrap();
+        assert_eq!(append_deduplicated["deduplicated"], true);
+        assert_eq!(append_deduplicated["generation"], appended["generation"]);
+        let append_identity_conflict = writer
+            .execute_tool(
+                &client,
+                "workspace_append",
+                &serde_json::json!({
+                    "path": "docs/a.txt",
+                    "operation_id": "append_a",
+                    "base_generation": put_a["generation"],
+                    "text": "different delta\n",
+                }),
+            )
+            .unwrap_err();
+        assert_eq!(
+            append_identity_conflict["code"],
+            "WorkspaceWriteOutcomeUnknown"
+        );
+
+        let edited = writer
+            .execute_tool(
+                &client,
+                "workspace_edit",
+                &serde_json::json!({
+                    "path": "docs/a.txt",
+                    "operation_id": "edit_a",
+                    "base_generation": appended["generation"],
+                    "old_string": "beta",
+                    "new_string": "BETA",
+                }),
+            )
+            .unwrap();
+        assert_eq!(edited["replacements"], 1);
+        let edit_deduplicated = writer
+            .execute_tool(
+                &client,
+                "workspace_edit",
+                &serde_json::json!({
+                    "path": "docs/a.txt",
+                    "operation_id": "edit_a",
+                    "base_generation": appended["generation"],
+                    "old_string": "beta",
+                    "new_string": "BETA",
+                }),
+            )
+            .unwrap();
+        assert_eq!(edit_deduplicated["deduplicated"], true);
+        assert_eq!(edit_deduplicated["generation"], edited["generation"]);
+        let edit_identity_conflict = writer
+            .execute_tool(
+                &client,
+                "workspace_edit",
+                &serde_json::json!({
+                    "path": "docs/a.txt",
+                    "operation_id": "edit_a",
+                    "base_generation": appended["generation"],
+                    "old_string": "beta",
+                    "new_string": "different replacement",
+                }),
+            )
+            .unwrap_err();
+        assert_eq!(
+            edit_identity_conflict["code"],
+            "WorkspaceWriteOutcomeUnknown"
+        );
+        let no_change = writer
+            .execute_tool(
+                &client,
+                "workspace_edit",
+                &serde_json::json!({
+                    "path": "docs/a.txt",
+                    "operation_id": "edit_no_change",
+                    "base_generation": edited["generation"],
+                    "old_string": "BETA",
+                    "new_string": "BETA",
+                }),
+            )
+            .unwrap();
+        assert_eq!(no_change["no_change"], true);
+        assert_eq!(no_change["deduplicated"], false);
+        assert_eq!(no_change["generation"], edited["generation"]);
+        let stale_append = writer
+            .execute_tool(
+                &client,
+                "workspace_append",
+                &serde_json::json!({
+                    "path": "docs/a.txt",
+                    "operation_id": "stale_append",
+                    "base_generation": put_a["generation"],
+                    "text": "stale\n",
+                }),
+            )
+            .unwrap_err();
+        assert_eq!(stale_append["code"], "WorkspaceConflict");
+        let final_read = reader
+            .execute_tool(
+                &client,
+                "workspace_read",
+                &serde_json::json!({"path": "docs/a.txt", "format": "bytes"}),
+            )
+            .unwrap();
+        assert_eq!(final_read["bytes"], "YWxwaGEKQkVUQQpnYW1tYQo=");
+
+        let mut other_options = lingtai_mcp_options();
+        other_options.workspace_id = Some(s("other-workspace-integration-v1"));
+        other_options.workspace_actor_id = Some(s("reader-c"));
+        let other =
+            mcp_runtime_for_options::<LocalObjectStore>(&other_options, DEFAULT_UID, DEFAULT_GID)
+                .unwrap();
+        let other_root = other
+            .execute_tool(&client, "workspace_list", &serde_json::json!({}))
+            .unwrap();
+        assert_eq!(other_root["total_entry_count"], 0);
+        assert_eq!(other_root["read_version"], serde_json::Value::Null);
+        let other_read = other
+            .execute_tool(
+                &client,
+                "workspace_read",
+                &serde_json::json!({"path": "docs/a.txt", "format": "bytes"}),
+            )
+            .unwrap_err();
+        assert_eq!(other_read["code"], "WorkspaceNotFound");
+
+        let encoded_workspace = URL_SAFE_NO_PAD.encode(workspace_id.as_bytes());
+        let shared_root = format!("/workspaces/{encoded_workspace}/shared");
+        let shared = client.metadata().lookup(&shared_root).unwrap().unwrap();
+        client
+            .metadata()
+            .create_special_node(
+                shared.attr.inode,
+                DentryName::new("pipe").unwrap(),
+                SpecialNodeSpec {
+                    file_type: FileType::NamedPipe,
+                    mode: 0o644,
+                    rdev: 0,
+                    uid: DEFAULT_UID,
+                    gid: DEFAULT_GID,
+                },
+            )
+            .unwrap();
+        let listed_root = reader
+            .execute_tool(&client, "workspace_list", &serde_json::json!({}))
+            .unwrap();
+        assert!(listed_root["entries"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|entry| entry["path"] == "pipe" && entry["kind"] == "special"));
+        let special_read = reader
+            .execute_tool(
+                &client,
+                "workspace_read",
+                &serde_json::json!({"path": "pipe", "format": "bytes"}),
+            )
+            .unwrap_err();
+        assert_eq!(special_read["code"], "WorkspacePathViolation");
+        let special_traversal = writer
+            .execute_tool(
+                &client,
+                "workspace_put_file",
+                &serde_json::json!({
+                    "path": "pipe/escape.txt",
+                    "operation_id": "escape",
+                    "base_generation": null,
+                    "text": "blocked",
+                }),
+            )
+            .unwrap_err();
+        assert_eq!(special_traversal["code"], "WorkspacePathViolation");
+    }
+
+    #[test]
+    fn shared_workspace_small_limit_does_not_mask_committed_write() {
+        let session = SharedWorkbenchMcpSession::acquire();
+        let client = session.direct_client();
+        let mut options = lingtai_writer_mcp_options();
+        options.workspace_id = Some(s("shared-provider-small-limit-v1"));
+        options.workspace_actor_id = Some(s("writer-small-limit"));
+        options.workbench_max_bytes = 1;
+        let writer =
+            mcp_runtime_for_options::<LocalObjectStore>(&options, DEFAULT_UID, DEFAULT_GID)
+                .unwrap();
+        let args = serde_json::json!({
+            "path": "empty.txt",
+            "operation_id": "empty_put",
+            "base_generation": null,
+            "text": "",
+        });
+
+        let first = writer
+            .execute_tool(&client, "workspace_put_file", &args)
+            .unwrap();
+        assert_eq!(first["created"], true);
+        assert_eq!(first["deduplicated"], false);
+
+        let replay = writer
+            .execute_tool(&client, "workspace_put_file", &args)
+            .unwrap();
+        assert_eq!(replay["deduplicated"], true);
+        assert_eq!(replay["generation"], first["generation"]);
     }
 
     #[test]
@@ -3482,8 +4184,14 @@ mod tests {
             .tool_definitions(&workbench_client)
             .unwrap();
         let lingtai_tools = lingtai_runtime.tool_definitions(&lingtai_client).unwrap();
-        assert_eq!(workbench_tools, lingtai_tools);
+        assert_eq!(
+            &lingtai_tools[..workbench_tools.len()],
+            workbench_tools.as_slice()
+        );
         assert_eq!(workbench_tools.len(), 17);
+        assert_eq!(lingtai_tools.len(), 19);
+        assert_eq!(lingtai_tools[17].name, "workspace_list");
+        assert_eq!(lingtai_tools[18].name, "workspace_read");
         assert!(workbench_tools
             .iter()
             .all(|tool| tool.name != "workbench_restore"));
@@ -5334,6 +6042,10 @@ mod tests {
             profile: McpProfile::Workbench,
             workbench_root: Some(s("/agents/e2e-never/wb")),
             workbench_max_bytes: workbench_mcp::DEFAULT_WORKBENCH_MAX_BYTES,
+            workspace_id: None,
+            workspace_actor_id: None,
+            workspace_dev_membership: None,
+            workspace_grant: None,
         };
         let responses = run_workbench_mcp_requests_with_options(
             options,
