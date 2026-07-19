@@ -210,6 +210,32 @@ class SyncWorkbenchMcpTest(unittest.TestCase):
             code = sync.main(list(args))
         return code, stdout.getvalue(), stderr.getvalue()
 
+    def rewrite_installed_state_as_v1(self, agent: Path) -> dict:
+        lock_path = agent / sync.LOCK_NAME
+        lock = json.loads(lock_path.read_text(encoding="utf-8"))
+        lock["schema"] = sync.LOCK_SCHEMA_V1
+        del lock["launch"]["template_arg_indices"]
+        del lock["launch"]["launch_semantics_sha256"]
+        lock_path.write_text(
+            json.dumps(lock, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+        registry_path = agent / "mcp_registry.jsonl"
+        registry = json.loads(registry_path.read_text(encoding="utf-8"))
+        del registry["template_arg_indices"]
+        registry_path.write_text(
+            json.dumps(registry, separators=(",", ":")) + "\n",
+            encoding="utf-8",
+        )
+        init_path = agent / "init.json"
+        init = json.loads(init_path.read_text(encoding="utf-8"))
+        del init["mcp"]["nokv-workbench"]["template_arg_indices"]
+        init_path.write_text(
+            json.dumps(init, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+        return lock
+
     def sync_args(
         self,
         project: Path,
@@ -344,28 +370,8 @@ class SyncWorkbenchMcpTest(unittest.TestCase):
             installed = self.run_sync(*self.sync_args(project, source, binary))
             self.assertEqual(installed[0], 0, installed[2])
             lock_path = agent / sync.LOCK_NAME
-            lock = json.loads(lock_path.read_text(encoding="utf-8"))
-            lock["schema"] = sync.LOCK_SCHEMA_V1
-            del lock["launch"]["template_arg_indices"]
-            del lock["launch"]["launch_semantics_sha256"]
-            lock_path.write_text(
-                json.dumps(lock, indent=2, sort_keys=True) + "\n",
-                encoding="utf-8",
-            )
+            self.rewrite_installed_state_as_v1(agent)
             registry_path = agent / "mcp_registry.jsonl"
-            registry = json.loads(registry_path.read_text(encoding="utf-8"))
-            del registry["template_arg_indices"]
-            registry_path.write_text(
-                json.dumps(registry, separators=(",", ":")) + "\n",
-                encoding="utf-8",
-            )
-            init_path = agent / "init.json"
-            init = json.loads(init_path.read_text(encoding="utf-8"))
-            del init["mcp"]["nokv-workbench"]["template_arg_indices"]
-            init_path.write_text(
-                json.dumps(init, indent=2, sort_keys=True) + "\n",
-                encoding="utf-8",
-            )
             v1_lock_before = lock_path.read_bytes()
 
             checked = self.run_sync(
@@ -390,6 +396,107 @@ class SyncWorkbenchMcpTest(unittest.TestCase):
                 "template_arg_indices",
                 json.loads(registry_path.read_text(encoding="utf-8")),
             )
+
+    def test_v1_lingtai_check_rejects_opaque_template_tokens_then_sync_upgrades(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source = self.make_source(root)
+            project, agent = self.make_project(root)
+            tools = lingtai_tool_surface("writer")
+            binary = self.make_binary(root, tools)
+            workspace_id = "team-{agent_id}"
+            actor_id = "actor-{agent_dir}"
+            grant = self.canonical_grant(
+                workspace_id=workspace_id,
+                actor_id=actor_id,
+                role="writer",
+            )
+            args = self.sync_args(
+                project,
+                source,
+                binary,
+                profile="lingtai",
+                workspace_id=workspace_id,
+                actor_id=actor_id,
+                grant=grant,
+            )
+            digest = contract.raw_tool_definitions_sha256(tools)
+            with mock.patch.dict(
+                contract.FROZEN_LINGTAI_PROFILE_DIGESTS,
+                {"writer": digest},
+            ):
+                installed = self.run_sync(*args)
+                self.assertEqual(installed[0], 0, installed[2])
+                self.rewrite_installed_state_as_v1(agent)
+
+                with mock.patch.object(sync, "raw_tools_list") as live_probe:
+                    rejected = self.run_sync(
+                        "--project",
+                        str(project),
+                        "--agent",
+                        "coordinator",
+                        "--check",
+                    )
+
+                self.assertEqual(rejected[0], 1)
+                self.assertIn("legacy v1", rejected[2])
+                self.assertIn("normal sync without --check", rejected[2])
+                self.assertNotIn(workspace_id, rejected[2])
+                self.assertNotIn(actor_id, rejected[2])
+                self.assertNotIn(grant, rejected[2])
+                live_probe.assert_not_called()
+
+                upgraded = self.run_sync(*args)
+                checked = self.run_sync(
+                    "--project",
+                    str(project),
+                    "--agent",
+                    "coordinator",
+                    "--check",
+                )
+
+            self.assertEqual(upgraded[0], 0, upgraded[2])
+            self.assertEqual(checked[0], 0, checked[2])
+            lock = json.loads(
+                (agent / sync.LOCK_NAME).read_text(encoding="utf-8")
+            )
+            self.assertEqual(lock["schema"], sync.LOCK_SCHEMA_V2)
+            registry = json.loads(
+                (agent / "mcp_registry.jsonl").read_text(encoding="utf-8")
+            )
+            root_index = registry["args"].index("--workbench-root") + 1
+            workspace_index = registry["args"].index("--workspace-id") + 1
+            actor_index = registry["args"].index("--workspace-actor-id") + 1
+            self.assertEqual(registry["template_arg_indices"], [root_index])
+            self.assertNotIn(workspace_index, registry["template_arg_indices"])
+            self.assertNotIn(actor_index, registry["template_arg_indices"])
+            self.assertEqual(registry["args"][workspace_index], workspace_id)
+            self.assertEqual(registry["args"][actor_index], actor_id)
+
+    def test_v1_check_rejects_template_token_in_other_non_root_argument(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source = self.make_source(root)
+            project, agent = self.make_project(root)
+            binary = self.make_binary(root, tool_surface())
+            bucket = "bucket-{agent_address}"
+            args = (*self.sync_args(project, source, binary), "--s3-bucket", bucket)
+            installed = self.run_sync(*args)
+            self.assertEqual(installed[0], 0, installed[2])
+            self.rewrite_installed_state_as_v1(agent)
+
+            rejected = self.run_sync(
+                "--project",
+                str(project),
+                "--agent",
+                "coordinator",
+                "--check",
+            )
+
+            self.assertEqual(rejected[0], 1)
+            self.assertIn("non-Workbench-root", rejected[2])
+            self.assertIn("normal sync without --check", rejected[2])
+            self.assertNotIn(bucket, rejected[2])
 
     def test_v2_check_rejects_template_index_and_semantics_digest_drift(self):
         with tempfile.TemporaryDirectory() as tmp:

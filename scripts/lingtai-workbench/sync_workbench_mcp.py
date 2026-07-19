@@ -752,6 +752,28 @@ def config_from_lock(lock: dict[str, Any]) -> installer.InstallConfig:
     return config
 
 
+def validate_v1_operational_template_safety(
+    config: installer.InstallConfig,
+) -> None:
+    """Reject v1 launches whose expand-all behavior can rewrite literal argv."""
+
+    semantics = installer.mcp_launch_semantics(config)
+    allowed_indices = set(semantics["template_arg_indices"])
+    unsafe = any(
+        index not in allowed_indices
+        and any(token in argument for token in installer.AGENT_TEMPLATE_TOKENS)
+        for index, argument in enumerate(semantics["args"])
+    )
+    if unsafe:
+        raise ValueError(
+            "legacy v1 workbench lock cannot be operationally checked because "
+            "a non-Workbench-root launch argument contains an Agent template "
+            "token; run normal sync without --check using the exact current "
+            "profile and authorization tuple to atomically upgrade the Agent "
+            "registration and lock to v2"
+        )
+
+
 def verify_agent_configuration(
     agent_dir: Path,
     config: installer.InstallConfig,
@@ -1039,6 +1061,8 @@ def check_lock(
     lock_path = agent_dir / LOCK_NAME
     lock = read_lock(lock_path)
     config = config_from_lock(lock)
+    if lock["schema"] == LOCK_SCHEMA_V1:
+        validate_v1_operational_template_safety(config)
     command = Path(config.nokv_bin).expanduser().resolve()
     if not command.is_file():
         raise FileNotFoundError(f"locked NoKV binary does not exist: {command}")

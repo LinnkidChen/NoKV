@@ -158,8 +158,11 @@ a fabricated registry identity.
 
 New synchronization writes `nokv.lingtai.workbench_lock.v2`, which binds both
 the exact ordered argv and `template_arg_indices` in one launch-semantics
-digest. Existing v1 locks remain readable and checkable without mutation under
-their legacy expand-all semantics. A later normal synchronization upgrades the
+digest. Existing v1 locks remain readable under their legacy expand-all
+semantics. A v1 operational `--check` succeeds only when no non-Workbench-root
+argument contains a supported Agent token; otherwise it fails before launching
+the MCP and directs the operator to normal sync without printing the argument.
+A later normal synchronization still accepts that v1 state and upgrades the
 registration, init specification, and lock together to v2; a read-only
 `--check` never performs that migration.
 
@@ -409,7 +412,9 @@ the selected Workbench root contains a supported Agent token, and only then
 change the kernel. That sequence removes the opaque workspace/actor arguments
 before the old expand-all implementation can see them. The ability to read a
 historical v1 lock is migration support; it is not evidence that an old kernel
-is safe with a new v2 registration.
+is safe with a new v2 registration. For the same reason, an unsafe v1 lock can
+be read by normal sync for migration but cannot receive an operationally valid
+`--check` result until that migration succeeds.
 
 After the first durable restore operation activates `restore_to_fork_v1`, the
 persistent metadata contains an active marker and allocator downgrade fence.
