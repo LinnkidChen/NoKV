@@ -92,6 +92,13 @@ ids, grants, endpoints, and every other argv value remain literal even if their
 opaque bytes happen to contain the same brace-delimited text. Do not run this
 writer with an older kernel that ignores the field.
 
+LingTai expands Agent tokens in the MCP `command` string independently of
+`template_arg_indices`. The resolved project path, and therefore the immutable
+staged NoKV command path below it, must be literal: none may contain
+`{agent_id}`, `{agent_address}`, or `{agent_dir}`. Move a token-bearing project
+to a reviewed literal path before preflight; the supported helper rejects it
+before candidate discovery, staging, or probing.
+
 Choose stable local storage once. This example keeps both Holt metadata and
 local RustFS objects outside the source checkout:
 
@@ -164,11 +171,18 @@ argument contains a supported Agent token; otherwise it fails before launching
 the MCP without printing the argument. Do not rerun unchanged normal sync: it
 also fails before Agent mutation rather than silently converting an old
 expand-all token into a v2 literal. Review and provide concrete replacements
-for every affected option. For `lingtai` workspace or actor identities, supply
-the complete concrete replacement tuple and a canonical reissued grant bound
-to that tuple; never derive it by generically expanding the old values. Normal
-sync then upgrades the registration, init specification, and lock together to
-v2; a read-only `--check` never performs that migration.
+for every affected option. Each replacement must be explicit in that direct
+sync invocation, even when the concrete replacement equals the parser default;
+omission is not reviewed provenance. The supported `up.sh` path applies the
+same rule to non-empty explicitly supplied `LINGTAI_WORKBENCH_*` launch
+variables; an omitted or explicitly empty variable does not authorize a
+migration. For `lingtai` workspace or actor identities, supply the complete
+concrete replacement tuple and a canonical reissued grant bound to that tuple;
+never derive it by generically expanding the old values. An explicit
+`--profile workbench` selection remains the reviewed removal path for an unsafe
+old identity tuple; an implicit profile default is not rollback provenance.
+Normal sync then upgrades the registration, init specification, and lock
+together to v2; a read-only `--check` never performs that migration.
 
 By default the helper selects, in order, the only running coordinator, the only
 coordinator, or the only Agent. It performs that selection once; a later

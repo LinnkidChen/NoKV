@@ -277,6 +277,11 @@ check_agent /project
                     "LINGTAI_WORKBENCH_WORKSPACE_ID": "workspace-123",
                     "LINGTAI_WORKBENCH_WORKSPACE_ACTOR_ID": "actor-456",
                     "LINGTAI_WORKBENCH_WORKSPACE_GRANT": grant,
+                    "LINGTAI_WORKBENCH_SERVER_BIND": "127.0.0.1:7799",
+                    "LINGTAI_WORKBENCH_OBJECT_BACKEND": "rustfs",
+                    "LINGTAI_WORKBENCH_S3_ENDPOINT": "http://127.0.0.1:9000",
+                    "LINGTAI_WORKBENCH_S3_BUCKET": "nokv-lingtai-workbench",
+                    "LINGTAI_WORKBENCH_ROOT": "/agents/{agent_id}/wb",
                 },
             )
 
@@ -295,6 +300,23 @@ check_agent /project
                 self._assert_option(args, "--workspace-id", "workspace-123")
                 self._assert_option(args, "--workspace-actor-id", "actor-456")
                 self._assert_option(args, "--workspace-grant", grant)
+                self._assert_option(args, "--server-bind", "127.0.0.1:7799")
+                self._assert_option(args, "--object-backend", "rustfs")
+                self._assert_option(
+                    args,
+                    "--s3-endpoint",
+                    "http://127.0.0.1:9000",
+                )
+                self._assert_option(
+                    args,
+                    "--s3-bucket",
+                    "nokv-lingtai-workbench",
+                )
+                self._assert_option(
+                    args,
+                    "--workbench-root",
+                    "/agents/{agent_id}/wb",
+                )
                 self._assert_option(args, "--agent", "coordinator")
                 self._assert_option(
                     args,
@@ -349,7 +371,18 @@ probe_candidate_contract /project
 sync_agent /project
 check_agent /project
 """
-            completed = self._run_bash(command, str(capture))
+            launch_env = (
+                "LINGTAI_WORKBENCH_SERVER_BIND",
+                "LINGTAI_WORKBENCH_OBJECT_BACKEND",
+                "LINGTAI_WORKBENCH_S3_ENDPOINT",
+                "LINGTAI_WORKBENCH_S3_BUCKET",
+                "LINGTAI_WORKBENCH_ROOT",
+            )
+            completed = self._run_bash(
+                command,
+                str(capture),
+                unset=launch_env,
+            )
 
             self.assertEqual(completed.returncode, 0, completed.stderr)
             calls = self._read_calls(capture)
@@ -367,6 +400,32 @@ check_agent /project
                 )
             self.assertIn("--check", calls[3])
             self.assertNotIn("--profile", calls[3])
+            for option in (
+                "--server-bind",
+                "--object-backend",
+                "--s3-endpoint",
+                "--s3-bucket",
+                "--workbench-root",
+            ):
+                self.assertNotIn(option, calls[0])
+            for args in calls[1:3]:
+                self._assert_option(args, "--server-bind", "127.0.0.1:7799")
+                self._assert_option(args, "--object-backend", "rustfs")
+                self._assert_option(
+                    args,
+                    "--s3-endpoint",
+                    "http://127.0.0.1:9000",
+                )
+                self._assert_option(
+                    args,
+                    "--s3-bucket",
+                    "nokv-lingtai-workbench",
+                )
+                self._assert_option(
+                    args,
+                    "--workbench-root",
+                    "/agents/{agent_id}/wb",
+                )
 
     def test_explicit_workbench_profile_is_forwarded(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -403,6 +462,50 @@ preflight_agent /project
             self.assertEqual(len(calls), 1)
             self._assert_option(calls[0], "--profile", "workbench")
             self._assert_option(calls[0], "--agent", "coordinator")
+
+    def test_empty_launch_environment_does_not_claim_preflight_provenance(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            capture = Path(tmp) / "calls.bin"
+            command = r"""
+source "$1"
+CAPTURE="$2"
+python3() {
+  local argument=""
+  printf 'CALL\0' >>"${CAPTURE}"
+  for argument in "$@"; do
+    printf '%s\0' "${argument}" >>"${CAPTURE}"
+  done
+  printf 'END\0' >>"${CAPTURE}"
+  printf '%s\n' 'agent_state_sha256: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
+}
+validate_profile_selection
+PINNED_AGENT=coordinator
+PINNED_AGENT_IDENTITY=agent-identity-token
+preflight_agent /project
+"""
+            completed = self._run_bash(
+                command,
+                str(capture),
+                env={
+                    "LINGTAI_WORKBENCH_SERVER_BIND": "",
+                    "LINGTAI_WORKBENCH_OBJECT_BACKEND": "",
+                    "LINGTAI_WORKBENCH_S3_ENDPOINT": "",
+                    "LINGTAI_WORKBENCH_S3_BUCKET": "",
+                    "LINGTAI_WORKBENCH_ROOT": "",
+                },
+            )
+
+            self.assertEqual(completed.returncode, 0, completed.stderr)
+            calls = self._read_calls(capture)
+            self.assertEqual(len(calls), 1)
+            for option in (
+                "--server-bind",
+                "--object-backend",
+                "--s3-endpoint",
+                "--s3-bucket",
+                "--workbench-root",
+            ):
+                self.assertNotIn(option, calls[0])
 
     def test_automatic_agent_selection_is_resolved_once_and_pinned_across_phases(
         self,
@@ -823,6 +926,171 @@ main
             self.assertNotIn("--workspace-grant", rolled_back_registry["args"])
             self.assertEqual(retained_data.read_text(encoding="utf-8"), "keep\n")
             self.assertFalse((agent / ".nokv-workbench.transaction.json").exists())
+
+    def test_supported_path_unsafe_v1_omission_fails_before_prepare_or_probe(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source = self._make_source(root)
+            revision = self._source_revision(source)
+            binary = self._make_profile_binary(
+                root,
+                self._profile_tools(None),
+                self._profile_tools("reader"),
+            )
+            build_info = root / "build-info.json"
+            runtime.write_build_info(
+                build_info,
+                runtime.source_identity(source, revision),
+                binary,
+            )
+            project = root / "project"
+            agent = project / ".lingtai" / "coordinator"
+            agent.mkdir(parents=True)
+            (agent / "init.json").write_text('{"mcp": {}}\n', encoding="utf-8")
+            unsafe_bucket = "bucket-{agent_id}"
+            installed = subprocess.run(
+                [
+                    sys.executable,
+                    str(SCRIPT_DIR / "sync_workbench_mcp.py"),
+                    "--project",
+                    str(project),
+                    "--agent",
+                    "coordinator",
+                    "--nokv-bin",
+                    str(binary),
+                    "--build-info",
+                    str(build_info),
+                    "--revision",
+                    revision,
+                    "--s3-bucket",
+                    unsafe_bucket,
+                    "--timeout-seconds",
+                    "5",
+                ],
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+            self.assertEqual(installed.returncode, 0, installed.stderr)
+            lock_path = agent / "nokv-workbench.lock.json"
+            lock = json.loads(lock_path.read_text(encoding="utf-8"))
+            lock["schema"] = "nokv.lingtai.workbench_lock.v1"
+            del lock["launch"]["template_arg_indices"]
+            del lock["launch"]["launch_semantics_sha256"]
+            lock_path.write_text(
+                json.dumps(lock, indent=2, sort_keys=True) + "\n",
+                encoding="utf-8",
+            )
+            registry_path = agent / "mcp_registry.jsonl"
+            registry = json.loads(registry_path.read_text(encoding="utf-8"))
+            del registry["template_arg_indices"]
+            registry_path.write_text(
+                json.dumps(registry, separators=(",", ":")) + "\n",
+                encoding="utf-8",
+            )
+            init_path = agent / "init.json"
+            init = json.loads(init_path.read_text(encoding="utf-8"))
+            del init["mcp"]["nokv-workbench"]["template_arg_indices"]
+            init_path.write_text(
+                json.dumps(init, indent=2, sort_keys=True) + "\n",
+                encoding="utf-8",
+            )
+            target_paths = (registry_path, init_path, lock_path)
+            before = {path: path.read_bytes() for path in target_paths}
+            prepared = root / "prepared"
+            probed = root / "probed"
+            state_dir = root / "up-state"
+            command = r"""
+source "$1"
+STATE_DIR="$2"
+UP_LOCK_DIR="${STATE_DIR}/up.lock"
+PREPARED="$3"
+PROBED="$4"
+require_cmd() { :; }
+check_runtime_skill() { :; }
+prepare_runtime() { touch "${PREPARED}"; }
+ensure_rustfs() { :; }
+port_in_use() { return 0; }
+probe_candidate_contract() { touch "${PROBED}"; }
+ensure_nokv_server() { :; }
+main
+"""
+            completed = self._run_bash(
+                command,
+                str(state_dir),
+                str(prepared),
+                str(probed),
+                env={
+                    "LINGTAI_WORKBENCH_PROJECT": str(project),
+                    "LINGTAI_WORKBENCH_AGENT": "coordinator",
+                },
+                unset=(
+                    "LINGTAI_WORKBENCH_SERVER_BIND",
+                    "LINGTAI_WORKBENCH_OBJECT_BACKEND",
+                    "LINGTAI_WORKBENCH_S3_ENDPOINT",
+                    "LINGTAI_WORKBENCH_S3_BUCKET",
+                    "LINGTAI_WORKBENCH_ROOT",
+                    "LINGTAI_WORKBENCH_MCP_PROFILE",
+                ),
+            )
+
+            self.assertEqual(completed.returncode, 1)
+            self.assertIn("--s3-bucket", completed.stderr)
+            self.assertNotIn(unsafe_bucket, completed.stderr)
+            self.assertFalse(prepared.exists())
+            self.assertFalse(probed.exists())
+            self.assertEqual(
+                {path: path.read_bytes() for path in target_paths},
+                before,
+            )
+
+    def test_supported_path_token_project_fails_before_prepare_or_candidate_probe(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            project = root / "project-{agent_address}"
+            agent = project / ".lingtai" / "coordinator"
+            agent.mkdir(parents=True)
+            init_path = agent / "init.json"
+            init_path.write_text('{"mcp": {}}\n', encoding="utf-8")
+            init_before = init_path.read_bytes()
+            prepared = root / "prepared"
+            probed = root / "probed"
+            state_dir = root / "up-state"
+            command = r"""
+source "$1"
+STATE_DIR="$2"
+UP_LOCK_DIR="${STATE_DIR}/up.lock"
+PREPARED="$3"
+PROBED="$4"
+require_cmd() { :; }
+check_runtime_skill() { :; }
+prepare_runtime() { touch "${PREPARED}"; }
+ensure_rustfs() { :; }
+port_in_use() { return 0; }
+probe_candidate_contract() { touch "${PROBED}"; }
+ensure_nokv_server() { :; }
+main
+"""
+            completed = self._run_bash(
+                command,
+                str(state_dir),
+                str(prepared),
+                str(probed),
+                env={
+                    "LINGTAI_WORKBENCH_PROJECT": str(project),
+                    "LINGTAI_WORKBENCH_AGENT": "coordinator",
+                },
+            )
+
+            self.assertEqual(completed.returncode, 1)
+            self.assertIn("project path must be a literal path", completed.stderr)
+            self.assertNotIn(str(project), completed.stderr)
+            self.assertFalse(prepared.exists())
+            self.assertFalse(probed.exists())
+            self.assertEqual(init_path.read_bytes(), init_before)
+            self.assertFalse((agent / "mcp_registry.jsonl").exists())
+            self.assertFalse((agent / "nokv-workbench.lock.json").exists())
 
     def test_post_commit_check_failure_reports_committed_not_rolled_back(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

@@ -59,6 +59,25 @@ SYNC_LOCK_NAME = ".nokv-workbench.sync.lock"
 TRANSACTION_NAME = ".nokv-workbench.transaction.json"
 TRANSACTION_SCHEMA = "nokv.lingtai.workbench_transaction.v1"
 AGENT_IDENTITY_SCHEMA = "nokv.lingtai.orchestration_agent_identity.v1"
+V1_MIGRATION_FIELD_OPTIONS = {
+    "server_bind": "--server-bind",
+    "object_backend": "--object-backend",
+    "s3_endpoint": "--s3-endpoint",
+    "s3_bucket": "--s3-bucket",
+    "workspace_id": "--workspace-id",
+    "workspace_actor_id": "--workspace-actor-id",
+}
+V1_MIGRATION_IDENTITY_OPTIONS = frozenset(
+    {"--workspace-id", "--workspace-actor-id", "--workspace-grant"}
+)
+V1_MIGRATION_PROFILE_OPTION = "--profile"
+V1_MIGRATION_OPTIONS = frozenset(
+    {
+        *V1_MIGRATION_FIELD_OPTIONS.values(),
+        *V1_MIGRATION_IDENTITY_OPTIONS,
+        V1_MIGRATION_PROFILE_OPTION,
+    }
+)
 
 
 class SingletonValueAction(argparse.Action):
@@ -761,7 +780,41 @@ def non_root_agent_template_token_indices(
         index
         for index, argument in enumerate(semantics["args"])
         if index not in allowed_indices
-        and any(token in argument for token in installer.AGENT_TEMPLATE_TOKENS)
+        and contains_agent_template_token(argument)
+    )
+
+
+def contains_agent_template_token(value: str) -> bool:
+    return any(token in value for token in installer.AGENT_TEMPLATE_TOKENS)
+
+
+def validate_literal_mcp_command_path(path: Path | str, *, context: str) -> None:
+    if contains_agent_template_token(os.fspath(path)):
+        raise ValueError(
+            f"{context} must be a literal path without Agent template tokens "
+            "because LingTai expands MCP command strings; move the project or "
+            "runtime to a reviewed literal path before retrying"
+        )
+
+
+def explicit_v1_migration_options(argv: list[str]) -> frozenset[str]:
+    return frozenset(
+        option
+        for option in V1_MIGRATION_OPTIONS
+        if any(
+            argument == option or argument.startswith(f"{option}=")
+            for argument in argv
+        )
+    )
+
+
+def unsafe_v1_launch_fields(lock: dict[str, Any]) -> frozenset[str]:
+    launch = lock["launch"]
+    return frozenset(
+        field
+        for field in V1_MIGRATION_FIELD_OPTIONS
+        if isinstance(launch.get(field), str)
+        and contains_agent_template_token(launch[field])
     )
 
 
@@ -785,6 +838,8 @@ def validate_v1_operational_template_safety(
 def validate_v1_to_v2_template_migration(
     lock_path: Path,
     desired_config: installer.InstallConfig,
+    *,
+    explicit_options: frozenset[str],
 ) -> None:
     """Prevent an unsafe v1 expand-all value from silently becoming v2 literal."""
 
@@ -793,25 +848,37 @@ def validate_v1_to_v2_template_migration(
     existing_lock = read_lock(lock_path)
     if existing_lock["schema"] != LOCK_SCHEMA_V1:
         return
-    launch = existing_lock["launch"]
-    legacy_argv_fields = (
-        "server_bind",
-        "object_backend",
-        "s3_endpoint",
-        "s3_bucket",
-        "profile",
-        "workspace_id",
-        "workspace_actor_id",
-    )
-    existing_is_unsafe = any(
-        isinstance(launch.get(field), str)
-        and any(
-            token in launch[field] for token in installer.AGENT_TEMPLATE_TOKENS
-        )
-        for field in legacy_argv_fields
-    )
-    if not existing_is_unsafe:
+    unsafe_fields = unsafe_v1_launch_fields(existing_lock)
+    if not unsafe_fields:
         return
+    required_options = {
+        V1_MIGRATION_FIELD_OPTIONS[field] for field in unsafe_fields
+    }
+    identity_is_unsafe = bool(
+        unsafe_fields.intersection({"workspace_id", "workspace_actor_id"})
+    )
+    if identity_is_unsafe and desired_config.profile == "workbench":
+        if V1_MIGRATION_PROFILE_OPTION not in explicit_options:
+            raise ValueError(
+                "unsafe v1 LingTai identity removal requires an explicit "
+                "--profile workbench selection in this invocation; omission is "
+                "not reviewed rollback provenance"
+            )
+        required_options.difference_update(
+            {
+                V1_MIGRATION_FIELD_OPTIONS["workspace_id"],
+                V1_MIGRATION_FIELD_OPTIONS["workspace_actor_id"],
+            }
+        )
+    elif identity_is_unsafe:
+        required_options.update(V1_MIGRATION_IDENTITY_OPTIONS)
+    missing_options = sorted(required_options - explicit_options)
+    if missing_options:
+        raise ValueError(
+            "unsafe v1 launch migration lacks explicit reviewed replacement "
+            "provenance; provide these options in this invocation before any "
+            f"probe or Agent mutation: {', '.join(missing_options)}"
+        )
     if not non_root_agent_template_token_indices(desired_config):
         return
 
@@ -821,7 +888,7 @@ def validate_v1_to_v2_template_migration(
     )
     identity_still_unsafe = desired_config.profile == "lingtai" and any(
         isinstance(value, str)
-        and any(token in value for token in installer.AGENT_TEMPLATE_TOKENS)
+        and contains_agent_template_token(value)
         for value in identity_values
     )
     if identity_still_unsafe:
@@ -1014,6 +1081,7 @@ def offline_agent_preflight(
     agent_dir: Path,
     *,
     config: installer.InstallConfig,
+    explicit_migration_options: frozenset[str],
     profile_explicit: bool,
     accepted_digest: str | None,
 ) -> None:
@@ -1021,7 +1089,11 @@ def offline_agent_preflight(
         raise FileNotFoundError(f"LingTai agent directory does not exist: {agent_dir}")
     installer.read_registry(agent_dir / "mcp_registry.jsonl")
     installer.read_init(agent_dir / "init.json")
-    validate_v1_to_v2_template_migration(agent_dir / LOCK_NAME, config)
+    validate_v1_to_v2_template_migration(
+        agent_dir / LOCK_NAME,
+        config,
+        explicit_options=explicit_migration_options,
+    )
     expected_contract = expected_profile_contract_evidence(
         config.profile,
         role=workspace_role(config),
@@ -1131,6 +1203,7 @@ def check_lock(
     if lock["schema"] == LOCK_SCHEMA_V1:
         validate_v1_operational_template_safety(config)
     command = Path(config.nokv_bin).expanduser().resolve()
+    validate_literal_mcp_command_path(command, context="locked MCP command path")
     if not command.is_file():
         raise FileNotFoundError(f"locked NoKV binary does not exist: {command}")
     digest = sha256_file(command)
@@ -1210,6 +1283,7 @@ def check_lock(
 
 
 def parse_args(argv: list[str]) -> argparse.Namespace:
+    migration_options = explicit_v1_migration_options(argv)
     parser = argparse.ArgumentParser(
         description=(
             "Stage an immutable NoKV binary, gate its live workbench MCP contract, "
@@ -1317,6 +1391,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         ),
     )
     args = parser.parse_args(argv)
+    args.explicit_v1_migration_options = migration_options
     args.profile_explicit = getattr(args, "_profile_explicit", False)
     args.workspace_id_explicit = getattr(args, "_workspace_id_explicit", False)
     args.workspace_actor_id_explicit = getattr(
@@ -1423,6 +1498,10 @@ def main(argv: list[str]) -> int:
     error_display_path: Path | None = None
     try:
         project = Path(args.project).expanduser().resolve()
+        validate_literal_mcp_command_path(
+            project,
+            context="resolved LingTai project path",
+        )
         # open_agent_directory() intentionally changes cwd to the held Agent
         # descriptor. Preserve the public CLI contract by resolving an explicit
         # relative check candidate from the caller's invocation cwd first.
@@ -1455,6 +1534,9 @@ def main(argv: list[str]) -> int:
                     offline_agent_preflight(
                         agent_dir,
                         config=config,
+                        explicit_migration_options=(
+                            args.explicit_v1_migration_options
+                        ),
                         profile_explicit=args.profile_explicit,
                         accepted_digest=args.accept_contract_sha256,
                     )
@@ -1562,6 +1644,10 @@ def main(argv: list[str]) -> int:
             identity,
             expected_sha256=artifact_sha256 or args.expected_sha256,
         )
+        validate_literal_mcp_command_path(
+            runtime.command,
+            context="staged MCP command path",
+        )
         if args.stage_only:
             print(runtime.command)
             return 0
@@ -1630,7 +1716,11 @@ def main(argv: list[str]) -> int:
                     source=source,
                 )
                 lock_path = agent_dir / LOCK_NAME
-                validate_v1_to_v2_template_migration(lock_path, config)
+                validate_v1_to_v2_template_migration(
+                    lock_path,
+                    config,
+                    explicit_options=args.explicit_v1_migration_options,
+                )
                 probe_config = installer.InstallConfig(
                     **{**config.__dict__, "workbench_root": root}
                 )

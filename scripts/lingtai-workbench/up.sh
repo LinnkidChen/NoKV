@@ -7,11 +7,16 @@ STATE_DIR="${ROOT_DIR}/target/lingtai-workbench"
 CANDIDATE_NOKV_BIN="${NOKV_BIN:-}"
 NOKV_BIN=""
 SERVER_BIND="${LINGTAI_WORKBENCH_SERVER_BIND:-127.0.0.1:7799}"
+SERVER_BIND_IS_SET="${LINGTAI_WORKBENCH_SERVER_BIND+x}"
 S3_ENDPOINT="${LINGTAI_WORKBENCH_S3_ENDPOINT:-http://127.0.0.1:9000}"
+S3_ENDPOINT_IS_SET="${LINGTAI_WORKBENCH_S3_ENDPOINT+x}"
 S3_BUCKET="${LINGTAI_WORKBENCH_S3_BUCKET:-nokv-lingtai-workbench}"
+S3_BUCKET_IS_SET="${LINGTAI_WORKBENCH_S3_BUCKET+x}"
 OBJECT_BACKEND="${LINGTAI_WORKBENCH_OBJECT_BACKEND:-rustfs}"
+OBJECT_BACKEND_IS_SET="${LINGTAI_WORKBENCH_OBJECT_BACKEND+x}"
 DEFAULT_WORKBENCH_ROOT='/agents/{agent_id}/wb'
 WORKBENCH_ROOT="${LINGTAI_WORKBENCH_ROOT:-${DEFAULT_WORKBENCH_ROOT}}"
+WORKBENCH_ROOT_IS_SET="${LINGTAI_WORKBENCH_ROOT+x}"
 MCP_PROFILE="${LINGTAI_WORKBENCH_MCP_PROFILE-workbench}"
 MCP_PROFILE_IS_SET="${LINGTAI_WORKBENCH_MCP_PROFILE+x}"
 WORKSPACE_ID="${LINGTAI_WORKBENCH_WORKSPACE_ID-}"
@@ -302,6 +307,21 @@ preflight_agent() {
     --agent "${PINNED_AGENT}"
     --orchestration-agent-identity "${PINNED_AGENT_IDENTITY}"
   )
+  if [[ -n "${SERVER_BIND_IS_SET}" && -n "${LINGTAI_WORKBENCH_SERVER_BIND-}" ]]; then
+    args+=(--server-bind "${SERVER_BIND}")
+  fi
+  if [[ -n "${OBJECT_BACKEND_IS_SET}" && -n "${LINGTAI_WORKBENCH_OBJECT_BACKEND-}" ]]; then
+    args+=(--object-backend "${OBJECT_BACKEND}")
+  fi
+  if [[ -n "${S3_ENDPOINT_IS_SET}" && -n "${LINGTAI_WORKBENCH_S3_ENDPOINT-}" ]]; then
+    args+=(--s3-endpoint "${S3_ENDPOINT}")
+  fi
+  if [[ -n "${S3_BUCKET_IS_SET}" && -n "${LINGTAI_WORKBENCH_S3_BUCKET-}" ]]; then
+    args+=(--s3-bucket "${S3_BUCKET}")
+  fi
+  if [[ -n "${WORKBENCH_ROOT_IS_SET}" && -n "${LINGTAI_WORKBENCH_ROOT-}" ]]; then
+    args+=(--workbench-root "${WORKBENCH_ROOT}")
+  fi
   if [[ -n "${LINGTAI_WORKBENCH_ACCEPT_CONTRACT_SHA256:-}" ]]; then
     args+=(
       --accept-contract-sha256

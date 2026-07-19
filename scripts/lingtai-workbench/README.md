@@ -64,8 +64,12 @@ expand-all semantics. Its operational `--check` fails closed when any
 non-Workbench-root argument contains a supported Agent token. Normal sync also
 rejects an unchanged unsafe value before Agent mutation; it upgrades all three
 Agent files to v2 only after every affected option has a reviewed concrete
-replacement. A `lingtai` identity replacement requires the complete concrete
-workspace/actor tuple and a canonical reissued grant bound to it. `--check`
+replacement explicitly present in the direct CLI invocation. Parser defaults,
+omitted `up.sh` launch variables, and explicitly empty variables are not
+migration provenance, even when the resulting value equals the desired
+default. A `lingtai` identity replacement requires the complete concrete
+workspace/actor tuple and a canonical reissued grant bound to it; an explicit
+`--profile workbench` remains the supported removal of the old tuple. `--check`
 never rewrites state. Current
 `nokv.build_info.v2` identities record the crates.io registry identifier, exact
 crate version, and Holt package checksum from `Cargo.lock`; legacy
@@ -91,6 +95,12 @@ smoke in the user preflight guide is the minimum-version gate. Do not run a v2
 kernel downgrade, use the compatible kernel to roll the profile back to
 `workbench`, complete `--check` and `/refresh`, verify that no non-root argument
 contains a supported Agent token, and only then change kernels.
+
+The kernel expands tokens in the MCP command independently of argv selection.
+The resolved LingTai project and immutable staged NoKV command paths must not
+contain `{agent_id}`, `{agent_address}`, or `{agent_dir}`. The sync helper
+rejects such a project before candidate discovery, staging, live probing, or
+Agent-file mutation.
 
 ## Environment Reference
 
