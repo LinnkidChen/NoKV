@@ -1202,8 +1202,15 @@ def check_lock(
     config = config_from_lock(lock)
     if lock["schema"] == LOCK_SCHEMA_V1:
         validate_v1_operational_template_safety(config)
+    validate_literal_mcp_command_path(
+        config.nokv_bin,
+        context="locked MCP command path",
+    )
     command = Path(config.nokv_bin).expanduser().resolve()
-    validate_literal_mcp_command_path(command, context="locked MCP command path")
+    validate_literal_mcp_command_path(
+        command,
+        context="resolved locked MCP command path",
+    )
     if not command.is_file():
         raise FileNotFoundError(f"locked NoKV binary does not exist: {command}")
     digest = sha256_file(command)

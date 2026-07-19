@@ -389,6 +389,64 @@ class SyncWorkbenchMcpTest(unittest.TestCase):
             self.assertFalse((agent / sync.LOCK_NAME).exists())
             self.assertFalse((project / ".lingtai" / "runtime").exists())
 
+    def test_check_rejects_lexical_token_command_before_symlink_resolution(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source = self.make_source(root)
+            project, agent = self.make_project(root)
+            binary = self.make_binary(root, tool_surface())
+            installed = self.run_sync(*self.sync_args(project, source, binary))
+            self.assertEqual(installed[0], 0, installed[2])
+
+            lock_path = agent / sync.LOCK_NAME
+            registry_path = agent / "mcp_registry.jsonl"
+            init_path = agent / "init.json"
+            lock = json.loads(lock_path.read_text(encoding="utf-8"))
+            safe_command = Path(lock["artifact"]["command"])
+            token_parent = root / "private-runtime-{agent_id}"
+            token_parent.mkdir()
+            token_command = token_parent / "nokv"
+            token_command.symlink_to(safe_command)
+
+            registry = json.loads(registry_path.read_text(encoding="utf-8"))
+            registry["command"] = str(token_command)
+            registry_path.write_text(
+                json.dumps(registry, separators=(",", ":")) + "\n",
+                encoding="utf-8",
+            )
+            init = json.loads(init_path.read_text(encoding="utf-8"))
+            init["mcp"][registry["name"]]["command"] = str(token_command)
+            init_path.write_text(
+                json.dumps(init, indent=2, sort_keys=True) + "\n",
+                encoding="utf-8",
+            )
+            lock["artifact"]["command"] = str(token_command)
+            lock_path.write_text(
+                json.dumps(lock, indent=2, sort_keys=True) + "\n",
+                encoding="utf-8",
+            )
+            managed_paths = (registry_path, init_path, lock_path)
+            before = {path: path.read_bytes() for path in managed_paths}
+
+            with mock.patch.object(sync, "raw_tools_list") as live_probe:
+                rejected = self.run_sync(
+                    "--project",
+                    str(project),
+                    "--agent",
+                    "coordinator",
+                    "--check",
+                )
+
+            self.assertEqual(rejected[0], 1)
+            self.assertIn("locked MCP command path must be a literal path", rejected[2])
+            self.assertNotIn(str(token_command), rejected[2])
+            self.assertNotIn(str(safe_command), rejected[2])
+            live_probe.assert_not_called()
+            self.assertEqual(
+                {path: path.read_bytes() for path in managed_paths},
+                before,
+            )
+
     def test_v1_lock_remains_checkable_then_normal_sync_upgrades_to_v2(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
