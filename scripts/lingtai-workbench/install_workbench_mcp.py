@@ -8,9 +8,15 @@ import os
 import stat
 import sys
 import tempfile
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
+
+from workspace_grant import (
+    WorkspaceGrant,
+    encode_workspace_grant,
+    parse_workspace_grant,
+)
 
 
 DEFAULT_MCP_NAME = "nokv-workbench"
@@ -21,6 +27,24 @@ DEFAULT_SERVER_BIND = "127.0.0.1:7799"
 # and expanded by lingtai-kernel at MCP launch (Agent._expand_agent_placeholders).
 # Must stay identical to the kernel's bundled nokv-workbench skill assets.
 DEFAULT_WORKBENCH_ROOT = "/agents/{agent_id}/wb"
+_SINGLETON_OPTIONS_SEEN = "_identity_critical_singleton_options_seen"
+
+
+class _RejectDuplicateAction(argparse.Action):
+    def __call__(
+        self,
+        parser: argparse.ArgumentParser,
+        namespace: argparse.Namespace,
+        values: Any,
+        option_string: str | None = None,
+    ) -> None:
+        seen = set(getattr(namespace, _SINGLETON_OPTIONS_SEEN, ()))
+        if self.dest in seen:
+            option = option_string or self.option_strings[0]
+            parser.error(f"{option} may be specified at most once")
+        seen.add(self.dest)
+        setattr(namespace, _SINGLETON_OPTIONS_SEEN, seen)
+        setattr(namespace, self.dest, values)
 
 
 @dataclass(frozen=True)
@@ -33,6 +57,13 @@ class InstallConfig:
     workbench_root: str
     mcp_name: str = DEFAULT_MCP_NAME
     source: str = "local-nokv"
+    profile: str = "workbench"
+    workspace_id: str | None = None
+    workspace_actor_id: str | None = None
+    workspace_grant: str | None = field(default=None, repr=False)
+
+    def __post_init__(self) -> None:
+        validate_install_config(self)
 
 
 @dataclass(frozen=True)
@@ -50,7 +81,50 @@ def default_nokv_bin() -> str:
     return str(repo_root() / "target" / "debug" / "nokv")
 
 
+def parsed_workspace_grant(config: InstallConfig) -> WorkspaceGrant | None:
+    if config.profile != "lingtai":
+        return None
+    if (
+        not isinstance(config.workspace_id, str)
+        or not isinstance(config.workspace_actor_id, str)
+        or not isinstance(config.workspace_grant, str)
+    ):
+        raise ValueError(
+            "lingtai profile requires the complete workspace_id, "
+            "workspace_actor_id and workspace_grant tuple"
+        )
+    return parse_workspace_grant(
+        config.workspace_grant,
+        workspace_id=config.workspace_id,
+        actor_id=config.workspace_actor_id,
+    )
+
+
+def validate_install_config(config: InstallConfig) -> None:
+    if not isinstance(config.profile, str) or config.profile not in {
+        "workbench",
+        "lingtai",
+    }:
+        raise ValueError(f"unsupported MCP profile: {config.profile!r}")
+    workspace_fields = (
+        config.workspace_id,
+        config.workspace_actor_id,
+        config.workspace_grant,
+    )
+    if config.profile == "workbench":
+        if any(value is not None for value in workspace_fields):
+            raise ValueError("workbench profile rejects every workspace field")
+        return
+    if any(not isinstance(value, str) or not value for value in workspace_fields):
+        raise ValueError(
+            "lingtai profile requires the complete workspace_id, "
+            "workspace_actor_id and workspace_grant tuple"
+        )
+    parsed_workspace_grant(config)
+
+
 def mcp_args(config: InstallConfig) -> list[str]:
+    validate_install_config(config)
     args = [
         "--server-bind",
         config.server_bind,
@@ -65,11 +139,31 @@ def mcp_args(config: InstallConfig) -> list[str]:
             config.s3_bucket,
             "mcp",
             "--profile",
-            "workbench",
+            config.profile,
             "--workbench-root",
             config.workbench_root,
         ]
     )
+    if config.profile == "lingtai":
+        grant = parsed_workspace_grant(config)
+        if grant is None:
+            raise ValueError("lingtai profile requires a canonical workspace grant")
+        workspace_id = config.workspace_id
+        workspace_actor_id = config.workspace_actor_id
+        if not isinstance(workspace_id, str) or not isinstance(
+            workspace_actor_id, str
+        ):
+            raise ValueError("lingtai profile requires explicit workspace identities")
+        args.extend(
+            [
+                "--workspace-id",
+                workspace_id,
+                "--workspace-actor-id",
+                workspace_actor_id,
+                "--workspace-grant",
+                encode_workspace_grant(grant),
+            ]
+        )
     return args
 
 
@@ -348,7 +442,19 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--s3-bucket", default=DEFAULT_BUCKET)
     parser.add_argument("--workbench-root", default=DEFAULT_WORKBENCH_ROOT)
     parser.add_argument("--mcp-name", default=DEFAULT_MCP_NAME)
-    return parser.parse_args(argv)
+    parser.add_argument(
+        "--profile",
+        choices=("workbench", "lingtai"),
+        default="workbench",
+        action=_RejectDuplicateAction,
+    )
+    parser.add_argument("--workspace-id", action=_RejectDuplicateAction)
+    parser.add_argument("--workspace-actor-id", action=_RejectDuplicateAction)
+    parser.add_argument("--workspace-grant", action=_RejectDuplicateAction)
+    args = parser.parse_args(argv)
+    if hasattr(args, _SINGLETON_OPTIONS_SEEN):
+        delattr(args, _SINGLETON_OPTIONS_SEEN)
+    return args
 
 
 def main(argv: list[str]) -> int:
@@ -363,6 +469,10 @@ def main(argv: list[str]) -> int:
             s3_bucket=args.s3_bucket,
             workbench_root=args.workbench_root,
             mcp_name=args.mcp_name,
+            profile=args.profile,
+            workspace_id=args.workspace_id,
+            workspace_actor_id=args.workspace_actor_id,
+            workspace_grant=args.workspace_grant,
         )
         result = configure_agent(agent_dir, config)
     except Exception as err:

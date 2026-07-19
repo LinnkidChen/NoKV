@@ -28,6 +28,8 @@ jobs:
             scripts/lingtai-workbench/generate_nokv_build_info.py \
             scripts/lingtai-workbench/managed_nokv_server.py \
             scripts/lingtai-workbench/sync_workbench_mcp.py \
+            scripts/lingtai-workbench/workspace_grant.py \
+            scripts/lingtai-workbench/real_lingtai_rollout_test.py \
             scripts/lingtai-workbench/durable_restore_live_e2e.py
           python3 scripts/lingtai-workbench/workbench_contract_test.py
           python3 scripts/lingtai-workbench/nokv_runtime_test.py
@@ -35,6 +37,8 @@ jobs:
           python3 scripts/lingtai-workbench/install_workbench_mcp_test.py
           python3 scripts/lingtai-workbench/sync_workbench_mcp_test.py
           python3 scripts/lingtai-workbench/up_test.py
+          python3 scripts/lingtai-workbench/workspace_grant_test.py
+          python3 scripts/lingtai-workbench/real_lingtai_rollout_test_test.py
           python3 scripts/lingtai-workbench/durable_restore_live_e2e_test.py
           bash -n scripts/lingtai-workbench/start_rustfs.sh
           bash -n scripts/lingtai-workbench/up.sh

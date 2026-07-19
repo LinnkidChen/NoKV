@@ -16,14 +16,26 @@ import stat
 import subprocess
 import tempfile
 import urllib.parse
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+try:
+    import tomllib
+except ModuleNotFoundError:  # Python 3.10 remains supported by the helper CLI.
+    tomllib = None  # type: ignore[assignment]
 
-BUILD_INFO_SCHEMA = "nokv.build_info.v1"
+
+BUILD_INFO_SCHEMA_V1 = "nokv.build_info.v1"
+BUILD_INFO_SCHEMA_V2 = "nokv.build_info.v2"
+# Backward-compatible public alias used by existing v1 fixtures and callers.
+BUILD_INFO_SCHEMA = BUILD_INFO_SCHEMA_V1
+CRATES_IO_REGISTRY = "registry+https://github.com/rust-lang/crates.io-index"
+LOCK_SOURCE_DISTRIBUTIONS = frozenset({"brew", "path", "release", "source"})
 REVISION_RE = re.compile(r"^[0-9a-f]{40}$")
 SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
+CRATE_VERSION_RE = re.compile(r"^[0-9]+\.[0-9]+\.[0-9]+$")
+EXACT_CRATE_VERSION_RE = re.compile(r"^=([0-9]+\.[0-9]+\.[0-9]+)$")
 
 
 @dataclass(frozen=True)
@@ -34,10 +46,34 @@ class SourceIdentity:
     source_dirty: bool
     cargo_lock_sha256: str
     holt_crate_version: str
-    holt_git_commit: str
+    holt_git_commit: str | None = None
+    holt_registry: str | None = None
+    holt_checksum_sha256: str | None = None
 
     def as_dict(self) -> dict[str, Any]:
-        return asdict(self)
+        common = {
+            "schema": self.schema,
+            "nokv_version": self.nokv_version,
+            "nokv_git_commit": self.nokv_git_commit,
+            "source_dirty": self.source_dirty,
+            "cargo_lock_sha256": self.cargo_lock_sha256,
+            "holt_crate_version": self.holt_crate_version,
+        }
+        if self.schema == BUILD_INFO_SCHEMA_V1:
+            mapping = {**common, "holt_git_commit": self.holt_git_commit}
+        elif self.schema == BUILD_INFO_SCHEMA_V2:
+            mapping = {
+                **common,
+                "holt_registry": self.holt_registry,
+                "holt_checksum_sha256": self.holt_checksum_sha256,
+            }
+        else:
+            raise ValueError(f"unsupported NoKV build-info schema: {self.schema!r}")
+        if identity_from_mapping(mapping, context="source identity") != self:
+            raise ValueError(
+                f"source identity fields conflict with schema {self.schema}"
+            )
+        return mapping
 
 
 @dataclass(frozen=True)
@@ -77,10 +113,10 @@ def validate_revision(value: str) -> str:
     return normalized
 
 
-def validate_sha256(value: str) -> str:
+def validate_sha256(value: str, *, label: str = "binary SHA-256") -> str:
     normalized = value.lower()
     if not SHA256_RE.fullmatch(normalized):
-        raise ValueError("binary SHA-256 must contain exactly 64 hex characters")
+        raise ValueError(f"{label} must contain exactly 64 hex characters")
     return normalized
 
 
@@ -124,11 +160,199 @@ def discover_nokv_binary(explicit: str | None = None) -> Path:
 
 
 def _package_block(lock_text: str, name: str) -> dict[str, str]:
+    matches: list[dict[str, str]] = []
     for block in re.split(r"(?m)^\[\[package\]\]\s*$", lock_text):
-        values = dict(re.findall(r'(?m)^(name|version|source) = "([^"]+)"$', block))
+        values = dict(
+            re.findall(
+                r'(?m)^(name|version|source|checksum) = "([^"]+)"$',
+                block,
+            )
+        )
         if values.get("name") == name:
-            return values
-    raise ValueError(f"Cargo.lock does not contain package {name}")
+            matches.append(values)
+    if not matches:
+        raise ValueError(f"Cargo.lock does not contain package {name}")
+    if len(matches) != 1:
+        raise ValueError(f"Cargo.lock contains ambiguous package {name} entries")
+    return matches[0]
+
+
+def _strip_toml_comment(line: str) -> str:
+    quote: str | None = None
+    escaped = False
+    for index, character in enumerate(line):
+        if escaped:
+            escaped = False
+            continue
+        if quote == '"' and character == "\\":
+            escaped = True
+            continue
+        if character in {'"', "'"}:
+            if quote is None:
+                quote = character
+            elif quote == character:
+                quote = None
+            continue
+        if character == "#" and quote is None:
+            return line[:index]
+    return line
+
+
+def _split_inline_toml_table(value: str) -> list[str]:
+    parts: list[str] = []
+    start = 0
+    quote: str | None = None
+    escaped = False
+    depth = 0
+    for index, character in enumerate(value):
+        if escaped:
+            escaped = False
+            continue
+        if quote == '"' and character == "\\":
+            escaped = True
+            continue
+        if character in {'"', "'"}:
+            if quote is None:
+                quote = character
+            elif quote == character:
+                quote = None
+            continue
+        if quote is not None:
+            continue
+        if character in "[{(":
+            depth += 1
+        elif character in "]})":
+            depth -= 1
+            if depth < 0:
+                raise ValueError("Cargo.toml Holt dependency table is malformed")
+        elif character == "," and depth == 0:
+            parts.append(value[start:index].strip())
+            start = index + 1
+    if quote is not None or depth != 0:
+        raise ValueError("Cargo.toml Holt dependency table is malformed")
+    parts.append(value[start:].strip())
+    return [part for part in parts if part]
+
+
+def _fallback_toml_string(value: str) -> str | None:
+    value = value.strip()
+    if len(value) >= 2 and value[0] == value[-1] == '"':
+        try:
+            parsed = json.loads(value)
+        except json.JSONDecodeError as error:
+            raise ValueError("Cargo.toml Holt dependency string is malformed") from error
+        return parsed if isinstance(parsed, str) else None
+    if len(value) >= 2 and value[0] == value[-1] == "'":
+        return value[1:-1]
+    return None
+
+
+def _fallback_holt_dependency(manifest_text: str) -> dict[str, Any]:
+    """Parse only the supported Holt dependency forms on Python 3.10.
+
+    This intentionally is not a general TOML parser. It accepts a one-line
+    inline table under [workspace.dependencies] or a dedicated
+    [workspace.dependencies.holt] table and fails closed on ambiguity.
+    """
+
+    section = ""
+    inline: dict[str, Any] | None = None
+    dedicated: dict[str, Any] | None = None
+    key_re = re.compile(r"^[A-Za-z0-9_-]+$")
+
+    def record(target: dict[str, Any], assignment: str) -> None:
+        if "=" not in assignment:
+            raise ValueError("Cargo.toml Holt dependency assignment is malformed")
+        key, raw_value = (part.strip() for part in assignment.split("=", 1))
+        if key_re.fullmatch(key) is None or key in target:
+            raise ValueError("Cargo.toml Holt dependency keys are ambiguous")
+        parsed_string = _fallback_toml_string(raw_value)
+        raw_value = raw_value.strip()
+        if parsed_string is not None:
+            target[key] = parsed_string
+        elif raw_value == "true":
+            target[key] = True
+        elif raw_value == "false":
+            target[key] = False
+        else:
+            # Do not turn invalid or unsupported unquoted TOML into a string:
+            # version identity is accepted only from a syntactically quoted
+            # TOML string on the Python 3.10 fallback path.
+            target[key] = None
+
+    for raw_line in manifest_text.splitlines():
+        line = _strip_toml_comment(raw_line).strip()
+        if not line:
+            continue
+        if line.startswith("["):
+            match = re.fullmatch(r"\[\s*([^\]]+)\s*\]", line)
+            if match is None:
+                raise ValueError("Cargo.toml section header is malformed")
+            section = match.group(1).strip()
+            if section == "workspace.dependencies.holt":
+                if dedicated is not None:
+                    raise ValueError("Cargo.toml declares Holt more than once")
+                dedicated = {}
+            continue
+        if section == "workspace.dependencies":
+            match = re.fullmatch(r"holt\s*=\s*\{(.*)\}", line)
+            if match is not None:
+                if inline is not None:
+                    raise ValueError("Cargo.toml declares Holt more than once")
+                inline = {}
+                for assignment in _split_inline_toml_table(match.group(1)):
+                    record(inline, assignment)
+        elif section == "workspace.dependencies.holt":
+            assert dedicated is not None
+            record(dedicated, line)
+
+    if inline is not None and dedicated is not None:
+        raise ValueError("Cargo.toml declares ambiguous Holt dependency tables")
+    holt = inline if inline is not None else dedicated
+    if holt is None:
+        raise ValueError("Cargo.toml must declare Holt as a workspace dependency table")
+    return holt
+
+
+def _workspace_holt_dependency(manifest_text: str) -> dict[str, Any]:
+    if tomllib is None:
+        return _fallback_holt_dependency(manifest_text)
+    try:
+        manifest = tomllib.loads(manifest_text)
+    except tomllib.TOMLDecodeError as error:
+        raise ValueError(f"Cargo.toml is not valid TOML: {error}") from error
+    workspace = manifest.get("workspace")
+    dependencies = workspace.get("dependencies") if isinstance(workspace, dict) else None
+    holt = dependencies.get("holt") if isinstance(dependencies, dict) else None
+    if not isinstance(holt, dict):
+        raise ValueError("Cargo.toml must declare Holt as a workspace dependency table")
+    return holt
+
+
+def _registry_holt_version(manifest_text: str) -> str:
+    holt = _workspace_holt_dependency(manifest_text)
+    source_keys = {
+        "git",
+        "rev",
+        "branch",
+        "tag",
+        "path",
+        "registry",
+        "package",
+    }
+    ambiguous = sorted(source_keys.intersection(holt))
+    if ambiguous:
+        raise ValueError(
+            "Cargo.toml has ambiguous Holt registry source fields: "
+            f"{ambiguous}"
+        )
+    version = holt.get("version")
+    if not isinstance(version, str):
+        raise ValueError("Cargo.toml must exactly pin Holt as version = \"=x.y.z\"")
+    match = EXACT_CRATE_VERSION_RE.fullmatch(version)
+    if match is None:
+        raise ValueError("Cargo.toml must exactly pin Holt as version = \"=x.y.z\"")
+    return match.group(1)
 
 
 def _nokv_version(source_root: Path) -> str:
@@ -166,64 +390,223 @@ def source_identity(source_root: Path, revision: str | None = None) -> SourceIde
     lock_text = cargo_lock.read_text(encoding="utf-8")
     holt = _package_block(lock_text, "holt")
     source = holt.get("source", "")
-    parsed_source = urllib.parse.urlsplit(source.removeprefix("git+").split("#", 1)[0])
-    if (
-        parsed_source.scheme != "https"
-        or (parsed_source.hostname or "").lower() != "github.com"
-        or parsed_source.path.rstrip("/").lower() != "/nokv-lab/holt.git"
-    ):
-        raise ValueError("Cargo.lock Holt package is not pinned to NoKV-Lab/holt")
-    source_commit = source.rsplit("#", 1)[-1]
-    holt_commit = validate_revision(source_commit)
     holt_version = holt.get("version")
     if not holt_version:
         raise ValueError("Cargo.lock Holt package has no version")
     manifest_text = cargo_toml.read_text(encoding="utf-8")
-    manifest_match = re.search(
-        r'(?m)^holt\s*=\s*\{[^\n]*\brev\s*=\s*"([0-9a-fA-F]{40})"',
-        manifest_text,
-    )
-    if manifest_match is None:
-        raise ValueError("Cargo.toml must pin Holt with a full git rev")
-    manifest_commit = validate_revision(manifest_match.group(1))
-    if manifest_commit != holt_commit:
-        raise ValueError(
-            "Holt revision differs between Cargo.toml and Cargo.lock: "
-            f"{manifest_commit} != {holt_commit}"
+    def common_identity() -> dict[str, Any]:
+        return {
+            "nokv_version": _nokv_version(root),
+            "nokv_git_commit": revision,
+            "source_dirty": dirty,
+            "cargo_lock_sha256": sha256_file(cargo_lock),
+            "holt_crate_version": holt_version,
+        }
+
+    if source.startswith("git+"):
+        parsed_source = urllib.parse.urlsplit(
+            source.removeprefix("git+").split("#", 1)[0]
+        )
+        if (
+            parsed_source.scheme != "https"
+            or (parsed_source.hostname or "").lower() != "github.com"
+            or parsed_source.path.rstrip("/").lower() != "/nokv-lab/holt.git"
+        ):
+            raise ValueError(
+                "Cargo.lock Holt package is not pinned to NoKV-Lab/holt"
+            )
+        source_commit = source.rsplit("#", 1)[-1]
+        holt_commit = validate_revision(source_commit)
+        manifest_match = re.search(
+            r'(?m)^holt\s*=\s*\{[^\n]*\brev\s*=\s*"([0-9a-fA-F]{40})"',
+            manifest_text,
+        )
+        if manifest_match is None:
+            raise ValueError("Cargo.toml must pin Holt with a full git rev")
+        manifest_commit = validate_revision(manifest_match.group(1))
+        if manifest_commit != holt_commit:
+            raise ValueError(
+                "Holt revision differs between Cargo.toml and Cargo.lock: "
+                f"{manifest_commit} != {holt_commit}"
+            )
+        return SourceIdentity(
+            schema=BUILD_INFO_SCHEMA_V1,
+            **common_identity(),
+            holt_git_commit=holt_commit,
         )
 
-    return SourceIdentity(
-        schema=BUILD_INFO_SCHEMA,
-        nokv_version=_nokv_version(root),
-        nokv_git_commit=revision,
-        source_dirty=dirty,
-        cargo_lock_sha256=sha256_file(cargo_lock),
-        holt_crate_version=holt_version,
-        holt_git_commit=holt_commit,
+    if source.startswith("registry+"):
+        if source != CRATES_IO_REGISTRY:
+            raise ValueError(
+                "Cargo.lock Holt package is not from the recognized crates.io "
+                f"registry {CRATES_IO_REGISTRY}: {source!r}"
+            )
+        manifest_version = _registry_holt_version(manifest_text)
+        if not CRATE_VERSION_RE.fullmatch(holt_version):
+            raise ValueError("Cargo.lock Holt package has an invalid crate version")
+        if manifest_version != holt_version:
+            raise ValueError(
+                "Holt version differs between Cargo.toml and Cargo.lock: "
+                f"{manifest_version} != {holt_version}"
+            )
+        checksum = holt.get("checksum")
+        if not isinstance(checksum, str) or not checksum:
+            raise ValueError("Cargo.lock registry Holt package has no checksum")
+        normalized_checksum = validate_sha256(
+            checksum,
+            label="Cargo.lock Holt checksum",
+        )
+        if normalized_checksum != checksum:
+            raise ValueError("Cargo.lock Holt checksum must use lowercase hex")
+        return SourceIdentity(
+            schema=BUILD_INFO_SCHEMA_V2,
+            **common_identity(),
+            holt_git_commit=None,
+            holt_registry=source,
+            holt_checksum_sha256=checksum,
+        )
+
+    raise ValueError(
+        "Cargo.lock Holt package has an ambiguous or unsupported source identity"
     )
 
 
-def identity_from_mapping(data: Any, *, context: str) -> SourceIdentity:
-    if not isinstance(data, dict) or data.get("schema") != BUILD_INFO_SCHEMA:
-        raise ValueError(f"{context} is not a {BUILD_INFO_SCHEMA} object")
+def _identity_from_mapping(
+    data: Any,
+    *,
+    context: str,
+    container_fields: frozenset[str],
+) -> SourceIdentity:
+    if not isinstance(data, dict) or data.get("schema") not in {
+        BUILD_INFO_SCHEMA_V1,
+        BUILD_INFO_SCHEMA_V2,
+    }:
+        raise ValueError(
+            f"{context} is not a supported {BUILD_INFO_SCHEMA_V1} or "
+            f"{BUILD_INFO_SCHEMA_V2} object"
+        )
+    schema = data["schema"]
+    common_fields = frozenset(
+        {
+            "schema",
+            "nokv_version",
+            "nokv_git_commit",
+            "source_dirty",
+            "cargo_lock_sha256",
+            "holt_crate_version",
+        }
+    )
+    if schema == BUILD_INFO_SCHEMA_V1:
+        if "holt_registry" in data or "holt_checksum_sha256" in data:
+            raise ValueError(f"{context}: ambiguous Holt source fields for v1")
+        source_fields = frozenset({"holt_git_commit"})
+    else:
+        if "holt_git_commit" in data:
+            raise ValueError(f"{context}: ambiguous Holt source fields for v2")
+        source_fields = frozenset({"holt_registry", "holt_checksum_sha256"})
+
+    expected_fields = common_fields | source_fields | container_fields
+    actual_fields = set(data)
+    missing_fields = expected_fields - actual_fields
+    unsupported_fields = actual_fields - expected_fields
+    if missing_fields or unsupported_fields:
+        raise ValueError(
+            f"{context}: build identity key set differs; "
+            f"missing fields={sorted(missing_fields)}, "
+            f"unsupported fields={sorted(unsupported_fields)}"
+        )
     required_strings = (
         "nokv_version",
         "nokv_git_commit",
         "cargo_lock_sha256",
         "holt_crate_version",
-        "holt_git_commit",
     )
     for field in required_strings:
         if not isinstance(data.get(field), str) or not data[field]:
             raise ValueError(f"{context}: {field} must be a non-empty string")
     if not isinstance(data.get("source_dirty"), bool):
         raise ValueError(f"{context}: source_dirty must be a boolean")
-    validate_revision(data["nokv_git_commit"])
-    validate_revision(data["holt_git_commit"])
-    validate_sha256(data["cargo_lock_sha256"])
-    return SourceIdentity(
-        **{field: data[field] for field in SourceIdentity.__annotations__}
+    normalized_nokv_revision = validate_revision(data["nokv_git_commit"])
+    if normalized_nokv_revision != data["nokv_git_commit"]:
+        raise ValueError(f"{context}: nokv_git_commit must use lowercase hex")
+    normalized_cargo_lock_sha256 = validate_sha256(
+        data["cargo_lock_sha256"],
+        label=f"{context}: cargo_lock_sha256",
     )
+    if normalized_cargo_lock_sha256 != data["cargo_lock_sha256"]:
+        raise ValueError(f"{context}: cargo_lock_sha256 must use lowercase hex")
+    common = {
+        "schema": schema,
+        "nokv_version": data["nokv_version"],
+        "nokv_git_commit": data["nokv_git_commit"],
+        "source_dirty": data["source_dirty"],
+        "cargo_lock_sha256": data["cargo_lock_sha256"],
+        "holt_crate_version": data["holt_crate_version"],
+    }
+    if schema == BUILD_INFO_SCHEMA_V1:
+        holt_git_commit = data.get("holt_git_commit")
+        if not isinstance(holt_git_commit, str) or not holt_git_commit:
+            raise ValueError(f"{context}: holt_git_commit must be a non-empty string")
+        normalized_holt_revision = validate_revision(holt_git_commit)
+        if normalized_holt_revision != holt_git_commit:
+            raise ValueError(f"{context}: holt_git_commit must use lowercase hex")
+        return SourceIdentity(
+            **common,
+            holt_git_commit=holt_git_commit,
+        )
+
+    holt_registry = data.get("holt_registry")
+    if holt_registry != CRATES_IO_REGISTRY:
+        raise ValueError(
+            f"{context}: holt_registry must equal {CRATES_IO_REGISTRY}"
+        )
+    holt_checksum = data.get("holt_checksum_sha256")
+    if not isinstance(holt_checksum, str) or not holt_checksum:
+        raise ValueError(
+            f"{context}: holt_checksum_sha256 must be a non-empty string"
+        )
+    normalized_checksum = validate_sha256(
+        holt_checksum,
+        label=f"{context}: holt_checksum_sha256",
+    )
+    if normalized_checksum != holt_checksum:
+        raise ValueError(f"{context}: holt_checksum_sha256 must use lowercase hex")
+    if not CRATE_VERSION_RE.fullmatch(data["holt_crate_version"]):
+        raise ValueError(f"{context}: holt_crate_version must be x.y.z")
+    return SourceIdentity(
+        **common,
+        holt_git_commit=None,
+        holt_registry=holt_registry,
+        holt_checksum_sha256=holt_checksum,
+    )
+
+
+def identity_from_mapping(data: Any, *, context: str) -> SourceIdentity:
+    """Parse an exact standalone v1 or v2 source identity object."""
+    return _identity_from_mapping(
+        data,
+        context=context,
+        container_fields=frozenset(),
+    )
+
+
+def lock_source_identity_from_mapping(data: Any, *, context: str) -> SourceIdentity:
+    """Parse the exact source object stored in a Workbench deployment lock."""
+    identity = _identity_from_mapping(
+        data,
+        context=context,
+        container_fields=frozenset({"distribution"}),
+    )
+    distribution = data["distribution"]
+    if (
+        not isinstance(distribution, str)
+        or distribution not in LOCK_SOURCE_DISTRIBUTIONS
+    ):
+        raise ValueError(
+            f"{context}: distribution must be one of "
+            f"{sorted(LOCK_SOURCE_DISTRIBUTIONS)}"
+        )
+    return identity
 
 
 def load_build_info(path: Path) -> BuildInfo:
@@ -232,12 +615,18 @@ def load_build_info(path: Path) -> BuildInfo:
 
 
 def build_info_from_mapping(data: Any, *, context: str) -> BuildInfo:
-    identity = identity_from_mapping(data, context=context)
+    identity = _identity_from_mapping(
+        data,
+        context=context,
+        container_fields=frozenset({"binary_sha256", "binary_size_bytes"}),
+    )
     binary_sha256 = data.get("binary_sha256")
     binary_size_bytes = data.get("binary_size_bytes")
     if not isinstance(binary_sha256, str):
         raise ValueError(f"{context}: binary_sha256 must be a string")
-    validate_sha256(binary_sha256)
+    normalized_binary_sha256 = validate_sha256(binary_sha256)
+    if normalized_binary_sha256 != binary_sha256:
+        raise ValueError(f"{context}: binary_sha256 must use lowercase hex")
     if not isinstance(binary_size_bytes, int) or isinstance(binary_size_bytes, bool):
         raise ValueError(f"{context}: binary_size_bytes must be an integer")
     if binary_size_bytes < 1:
@@ -459,6 +848,9 @@ def stage_runtime(
     project = project.expanduser().resolve()
     lingtai_root = project / ".lingtai"
     binary = binary.expanduser().resolve()
+    # Validate the complete schema-specific source identity before creating any
+    # managed runtime directory or copying artifact bytes.
+    identity.as_dict()
     digest = sha256_file(binary)
     if expected_sha256 is not None and digest != validate_sha256(expected_sha256):
         raise ValueError(

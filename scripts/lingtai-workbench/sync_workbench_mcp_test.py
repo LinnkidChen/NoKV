@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import base64
 import contextlib
 import copy
 import io
@@ -12,6 +13,7 @@ import os
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -26,6 +28,7 @@ import workbench_contract as contract  # noqa: E402
 
 
 HOLT_REVISION = "b" * 40
+HOLT_CHECKSUM = "d" * 64
 
 
 def tool_surface(*, include_restore: bool = True) -> list[dict]:
@@ -40,7 +43,54 @@ def tool_surface(*, include_restore: bool = True) -> list[dict]:
     ]
 
 
+def lingtai_tool_surface(role: str) -> list[dict]:
+    tools = tool_surface()
+    tools.extend(
+        {
+            "name": name,
+            "description": contract.FROZEN_SHARED_TOOL_DEFINITIONS[name][
+                "description"
+            ],
+            "inputSchema": copy.deepcopy(
+                contract.FROZEN_SHARED_TOOL_DEFINITIONS[name]["inputSchema"]
+            ),
+        }
+        for name in contract.FROZEN_LINGTAI_ROLE_TOOL_ORDER[role]
+    )
+    return tools
+
+
 class SyncWorkbenchMcpTest(unittest.TestCase):
+    def canonical_grant(
+        self,
+        *,
+        workspace_id: str = "team-alpha",
+        actor_id: str = "agent-7",
+        role: str = "writer",
+        grant_id: str = "grant_1",
+        issued_at_unix_ms: int | None = None,
+        expires_at_unix_ms: int | None = None,
+    ) -> str:
+        now = time.time_ns() // 1_000_000
+        fields = {
+            "schema": "nokv.lingtai.workspace_grant.v1",
+            "grant_id": grant_id,
+            "issuer": "lingtai-workbench-sync",
+            "audience": "nokv-mcp:lingtai",
+            "workspace_id": workspace_id,
+            "actor_id": actor_id,
+            "role": role,
+            "issued_at_unix_ms": issued_at_unix_ms or now - 1_000,
+            "expires_at_unix_ms": expires_at_unix_ms or now + 60_000,
+        }
+        canonical = json.dumps(
+            fields,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+        return base64.urlsafe_b64encode(canonical).decode("ascii").rstrip("=")
+
     def make_source(self, root: Path, *, lock_revision: str = HOLT_REVISION) -> Path:
         source = root / "source"
         (source / "crates" / "nokv").mkdir(parents=True)
@@ -84,6 +134,47 @@ class SyncWorkbenchMcpTest(unittest.TestCase):
         )
         return source
 
+    def make_registry_source(self, root: Path) -> Path:
+        source = root / "registry-source"
+        (source / "crates" / "nokv").mkdir(parents=True)
+        (source / "Cargo.toml").write_text(
+            "[workspace.dependencies]\n"
+            'holt = { version = "=0.8.2", default-features = false }\n',
+            encoding="utf-8",
+        )
+        (source / "Cargo.lock").write_text(
+            "version = 4\n\n"
+            "[[package]]\n"
+            'name = "holt"\n'
+            'version = "0.8.2"\n'
+            f'source = "{runtime.CRATES_IO_REGISTRY}"\n'
+            f'checksum = "{HOLT_CHECKSUM}"\n',
+            encoding="utf-8",
+        )
+        (source / "crates" / "nokv" / "Cargo.toml").write_text(
+            '[package]\nname = "nokv"\nversion = "0.1.0"\n',
+            encoding="utf-8",
+        )
+        (source / ".gitignore").write_text("/target/\n", encoding="utf-8")
+        subprocess.run(["git", "init", "-q"], cwd=source, check=True)
+        subprocess.run(["git", "add", "."], cwd=source, check=True)
+        subprocess.run(
+            [
+                "git",
+                "-c",
+                "user.name=NoKV Test",
+                "-c",
+                "user.email=nokv-test@example.invalid",
+                "commit",
+                "-q",
+                "-m",
+                "registry fixture",
+            ],
+            cwd=source,
+            check=True,
+        )
+        return source
+
     def source_revision(self, source: Path) -> str:
         return subprocess.check_output(
             ["git", "rev-parse", "HEAD"], cwd=source, text=True
@@ -119,14 +210,25 @@ class SyncWorkbenchMcpTest(unittest.TestCase):
             code = sync.main(list(args))
         return code, stdout.getvalue(), stderr.getvalue()
 
-    def sync_args(self, project: Path, source: Path, binary: Path) -> tuple[str, ...]:
+    def sync_args(
+        self,
+        project: Path,
+        source: Path,
+        binary: Path,
+        *,
+        profile: str = "workbench",
+        workspace_id: str = "team-alpha",
+        actor_id: str = "agent-7",
+        grant: str | None = None,
+        role: str = "writer",
+    ) -> tuple[str, ...]:
         build_info = binary.with_name(f"{binary.name}.build-info.json")
         runtime.write_build_info(
             build_info,
             runtime.source_identity(source, self.source_revision(source)),
             binary,
         )
-        return (
+        args = (
             "--project",
             str(project),
             "--agent",
@@ -140,6 +242,26 @@ class SyncWorkbenchMcpTest(unittest.TestCase):
             "--timeout-seconds",
             "5",
         )
+        if profile == "lingtai":
+            return (
+                *args,
+                "--profile",
+                profile,
+                "--workspace-id",
+                workspace_id,
+                "--workspace-actor-id",
+                actor_id,
+                "--workspace-grant",
+                grant
+                or self.canonical_grant(
+                    workspace_id=workspace_id,
+                    actor_id=actor_id,
+                    role=role,
+                ),
+            )
+        if profile != "workbench":
+            return (*args, "--profile", profile)
+        return args
 
     def test_sync_stages_gates_locks_and_is_idempotent(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -150,6 +272,9 @@ class SyncWorkbenchMcpTest(unittest.TestCase):
 
             first = self.run_sync(*self.sync_args(project, source, binary))
             self.assertEqual(first[0], 0, first[2])
+            self.assertIn(f"holt_revision: {HOLT_REVISION}", first[1])
+            self.assertNotIn("holt_registry:", first[1])
+            self.assertNotIn("holt_checksum_sha256:", first[1])
             lock_path = agent / sync.LOCK_NAME
             lock_before = lock_path.read_bytes()
             init_before = (agent / "init.json").read_bytes()
@@ -174,6 +299,10 @@ class SyncWorkbenchMcpTest(unittest.TestCase):
                 contract.expected_contract_evidence()["contract_sha256"],
             )
             self.assertEqual(lock["launch"]["workbench_root"], "/agents/coordinator/wb")
+            self.assertEqual(lock["launch"]["profile"], "workbench")
+            self.assertNotIn("workspace_id", lock["launch"])
+            self.assertNotIn("workspace_actor_id", lock["launch"])
+            self.assertNotIn("workspace_grant", lock["launch"])
 
             second = self.run_sync(*self.sync_args(project, source, binary))
             self.assertEqual(second[0], 0, second[2])
@@ -183,6 +312,42 @@ class SyncWorkbenchMcpTest(unittest.TestCase):
                 (agent / "mcp_registry.jsonl").read_bytes(), registry_before
             )
             self.assertIn("already synchronized", second[1])
+
+    def test_registry_holt_v2_output_uses_registry_and_checksum(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source = self.make_registry_source(root)
+            project, agent = self.make_project(root)
+            binary = self.make_binary(root, tool_surface())
+
+            installed = self.run_sync(*self.sync_args(project, source, binary))
+            checked = self.run_sync(
+                "--project",
+                str(project),
+                "--agent",
+                "coordinator",
+                "--check",
+            )
+
+            self.assertEqual(installed[0], 0, installed[2])
+            self.assertEqual(checked[0], 0, checked[2])
+            self.assertIn(
+                f"holt_registry: {runtime.CRATES_IO_REGISTRY}", installed[1]
+            )
+            self.assertIn(
+                f"holt_checksum_sha256: {HOLT_CHECKSUM}", installed[1]
+            )
+            self.assertNotIn("holt_revision:", installed[1])
+            self.assertNotIn("None", installed[1])
+            lock = json.loads((agent / sync.LOCK_NAME).read_text(encoding="utf-8"))
+            self.assertEqual(lock["source"]["schema"], runtime.BUILD_INFO_SCHEMA_V2)
+            self.assertEqual(
+                lock["source"]["holt_registry"], runtime.CRATES_IO_REGISTRY
+            )
+            self.assertEqual(
+                lock["source"]["holt_checksum_sha256"], HOLT_CHECKSUM
+            )
+            self.assertNotIn("holt_git_commit", lock["source"])
 
     def test_missing_restore_fails_before_agent_configuration(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -691,6 +856,1024 @@ class SyncWorkbenchMcpTest(unittest.TestCase):
             self.assertEqual(
                 {name: path.read_bytes() for name, path in paths.items()}, before
             )
+
+    def test_lingtai_install_check_and_tuple_lock_identity(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source = self.make_source(root)
+            project, agent = self.make_project(root)
+            tools = lingtai_tool_surface("writer")
+            binary = self.make_binary(root, tools)
+            grant = self.canonical_grant(role="writer")
+            args = self.sync_args(
+                project,
+                source,
+                binary,
+                profile="lingtai",
+                grant=grant,
+            )
+            digest = contract.raw_tool_definitions_sha256(tools)
+
+            with mock.patch.dict(
+                contract.FROZEN_LINGTAI_PROFILE_DIGESTS,
+                {"writer": digest},
+            ):
+                installed = self.run_sync(*args)
+                checked = self.run_sync(
+                    "--project",
+                    str(project),
+                    "--agent",
+                    "coordinator",
+                    "--check",
+                )
+
+            self.assertEqual(installed[0], 0, installed[2])
+            self.assertEqual(checked[0], 0, checked[2])
+            lock = json.loads((agent / sync.LOCK_NAME).read_text(encoding="utf-8"))
+            launch = lock["launch"]
+            self.assertEqual(launch["profile"], "lingtai")
+            self.assertEqual(launch["workspace_id"], "team-alpha")
+            self.assertEqual(launch["workspace_actor_id"], "agent-7")
+            grant_lock = launch["workspace_grant"]
+            self.assertEqual(grant_lock["role"], "writer")
+            self.assertEqual(grant_lock["grant_id"], "grant_1")
+            self.assertEqual(grant_lock["issuer"], "lingtai-workbench-sync")
+            self.assertEqual(grant_lock["audience"], "nokv-mcp:lingtai")
+            self.assertRegex(grant_lock["canonical_sha256"], r"^[0-9a-f]{64}$")
+            registry = json.loads(
+                (agent / "mcp_registry.jsonl").read_text(encoding="utf-8")
+            )
+            self.assertIn("--workspace-id", registry["args"])
+            self.assertIn(grant, registry["args"])
+            self.assertNotIn("--workspace-dev-membership", registry["args"])
+
+    def test_lingtai_contract_is_selected_by_grant_role(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source = self.make_source(root)
+            project, agent = self.make_project(root)
+            binary = self.make_binary(root, tool_surface())
+
+            rejected = self.run_sync(
+                *self.sync_args(
+                    project,
+                    source,
+                    binary,
+                    profile="lingtai",
+                    role="reader",
+                )
+            )
+
+            self.assertEqual(rejected[0], 1)
+            self.assertIn("lingtai reader tool surface differs", rejected[2])
+            self.assertFalse((agent / "mcp_registry.jsonl").exists())
+            self.assertFalse((agent / sync.LOCK_NAME).exists())
+
+    def test_profile_migrations_are_atomic_idempotent_and_preserve_data(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source = self.make_source(root)
+            project, agent = self.make_project(root)
+            binary = self.make_binary(root, tool_surface())
+            installed = self.run_sync(*self.sync_args(project, source, binary))
+            self.assertEqual(installed[0], 0, installed[2])
+            product_data = project / ".lingtai" / "shared-data" / "keep.txt"
+            product_data.parent.mkdir()
+            product_data.write_text("keep\n", encoding="utf-8")
+
+            lingtai_tools = lingtai_tool_surface("reader")
+            lingtai_binary = self.make_binary(root, lingtai_tools, "nokv-lingtai")
+            lingtai_args = self.sync_args(
+                project,
+                source,
+                lingtai_binary,
+                profile="lingtai",
+                role="reader",
+            )
+            digest = contract.raw_tool_definitions_sha256(lingtai_tools)
+            with mock.patch.dict(
+                contract.FROZEN_LINGTAI_PROFILE_DIGESTS,
+                {"reader": digest},
+            ):
+                migrated = self.run_sync(*lingtai_args)
+                stable = self.run_sync(*lingtai_args)
+            self.assertEqual(migrated[0], 0, migrated[2])
+            self.assertEqual(stable[0], 0, stable[2])
+            self.assertIn("already synchronized", stable[1])
+            lingtai_lock = json.loads(
+                (agent / sync.LOCK_NAME).read_text(encoding="utf-8")
+            )
+            self.assertEqual(lingtai_lock["launch"]["profile"], "lingtai")
+
+            rollback_args = (
+                *self.sync_args(project, source, binary),
+                "--profile",
+                "workbench",
+            )
+            rolled_back = self.run_sync(*rollback_args)
+            second_rollback = self.run_sync(*rollback_args)
+            self.assertEqual(rolled_back[0], 0, rolled_back[2])
+            self.assertEqual(second_rollback[0], 0, second_rollback[2])
+            workbench_lock = json.loads(
+                (agent / sync.LOCK_NAME).read_text(encoding="utf-8")
+            )
+            self.assertEqual(workbench_lock["launch"]["profile"], "workbench")
+            self.assertNotIn("workspace_id", workbench_lock["launch"])
+            self.assertNotIn("workspace_actor_id", workbench_lock["launch"])
+            self.assertNotIn("workspace_grant", workbench_lock["launch"])
+            registry = json.loads(
+                (agent / "mcp_registry.jsonl").read_text(encoding="utf-8")
+            )
+            self.assertNotIn("--workspace-id", registry["args"])
+            self.assertNotIn("--workspace-actor-id", registry["args"])
+            self.assertNotIn("--workspace-grant", registry["args"])
+            self.assertEqual(product_data.read_text(encoding="utf-8"), "keep\n")
+
+    def test_existing_lingtai_is_not_downgraded_by_omitted_profile(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source = self.make_source(root)
+            project, agent = self.make_project(root)
+            lingtai_tools = lingtai_tool_surface("reader")
+            lingtai_binary = self.make_binary(root, lingtai_tools, "nokv-lingtai")
+            workbench_binary = self.make_binary(root, tool_surface(), "nokv-workbench")
+            digest = contract.raw_tool_definitions_sha256(lingtai_tools)
+            with mock.patch.dict(
+                contract.FROZEN_LINGTAI_PROFILE_DIGESTS,
+                {"reader": digest},
+            ):
+                installed = self.run_sync(
+                    *self.sync_args(
+                        project,
+                        source,
+                        lingtai_binary,
+                        profile="lingtai",
+                        role="reader",
+                    )
+                )
+            self.assertEqual(installed[0], 0, installed[2])
+            paths = sync._transaction_files(agent)
+            before = {name: path.read_bytes() for name, path in paths.items()}
+
+            implicit_preflight = self.run_sync(
+                "--project",
+                str(project),
+                "--agent",
+                "coordinator",
+                "--preflight-only",
+            )
+            explicit_preflight = self.run_sync(
+                "--project",
+                str(project),
+                "--agent",
+                "coordinator",
+                "--preflight-only",
+                "--profile",
+                "workbench",
+            )
+            self.assertEqual(implicit_preflight[0], 1)
+            self.assertIn("refusing implicit", implicit_preflight[2])
+            self.assertEqual(explicit_preflight[0], 0, explicit_preflight[2])
+            self.assertEqual(
+                {name: path.read_bytes() for name, path in paths.items()}, before
+            )
+
+            probe_args = (
+                *self.sync_args(project, source, workbench_binary),
+                "--probe-only",
+            )
+            implicit_probe = self.run_sync(*probe_args)
+            explicit_probe = self.run_sync(
+                *probe_args,
+                "--profile",
+                "workbench",
+            )
+            self.assertEqual(implicit_probe[0], 1)
+            self.assertIn("refusing implicit", implicit_probe[2])
+            self.assertEqual(explicit_probe[0], 0, explicit_probe[2])
+            self.assertEqual(
+                {name: path.read_bytes() for name, path in paths.items()}, before
+            )
+
+            implicit = self.run_sync(
+                *self.sync_args(project, source, workbench_binary)
+            )
+
+            self.assertEqual(implicit[0], 1)
+            self.assertIn("refusing implicit default workbench transition", implicit[2])
+            self.assertIn("--profile workbench", implicit[2])
+            self.assertEqual(
+                {name: path.read_bytes() for name, path in paths.items()}, before
+            )
+
+            explicit = self.run_sync(
+                *self.sync_args(project, source, workbench_binary),
+                "--profile",
+                "workbench",
+            )
+
+            self.assertEqual(explicit[0], 0, explicit[2])
+            lock = json.loads((agent / sync.LOCK_NAME).read_text(encoding="utf-8"))
+            self.assertEqual(lock["launch"]["profile"], "workbench")
+
+    def test_lock_profile_and_workspace_fields_fail_closed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source = self.make_source(root)
+            project, agent = self.make_project(root)
+            binary = self.make_binary(root, tool_surface())
+            installed = self.run_sync(*self.sync_args(project, source, binary))
+            self.assertEqual(installed[0], 0, installed[2])
+            lock_path = agent / sync.LOCK_NAME
+            healthy = json.loads(lock_path.read_text(encoding="utf-8"))
+
+            for profile in (None, 7, "agent"):
+                with self.subTest(profile=profile):
+                    changed = copy.deepcopy(healthy)
+                    if profile is None:
+                        del changed["launch"]["profile"]
+                    else:
+                        changed["launch"]["profile"] = profile
+                    lock_path.write_text(
+                        json.dumps(changed, indent=2, sort_keys=True) + "\n",
+                        encoding="utf-8",
+                    )
+                    checked = self.run_sync(
+                        "--project",
+                        str(project),
+                        "--agent",
+                        "coordinator",
+                        "--check",
+                    )
+                    self.assertEqual(checked[0], 1)
+                    self.assertIn("lock profile", checked[2])
+
+            changed = copy.deepcopy(healthy)
+            changed["launch"]["workspace_id"] = "unexpected"
+            lock_path.write_text(
+                json.dumps(changed, indent=2, sort_keys=True) + "\n",
+                encoding="utf-8",
+            )
+            checked = self.run_sync(
+                "--project", str(project), "--agent", "coordinator", "--check"
+            )
+            self.assertEqual(checked[0], 1)
+            self.assertIn("workbench lock", checked[2])
+
+    def test_lingtai_lock_tuple_hash_and_expiry_fail_before_live_probe(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source = self.make_source(root)
+            project, agent = self.make_project(root)
+            tools = lingtai_tool_surface("reader")
+            binary = self.make_binary(root, tools)
+            digest = contract.raw_tool_definitions_sha256(tools)
+            with mock.patch.dict(
+                contract.FROZEN_LINGTAI_PROFILE_DIGESTS,
+                {"reader": digest},
+            ):
+                installed = self.run_sync(
+                    *self.sync_args(
+                        project,
+                        source,
+                        binary,
+                        profile="lingtai",
+                        role="reader",
+                    )
+                )
+            self.assertEqual(installed[0], 0, installed[2])
+            lock_path = agent / sync.LOCK_NAME
+            healthy = json.loads(lock_path.read_text(encoding="utf-8"))
+
+            mutations = {
+                "hash": lambda lock: lock["launch"]["workspace_grant"].__setitem__(
+                    "canonical_sha256", "0" * 64
+                ),
+                "tuple": lambda lock: lock["launch"].__setitem__(
+                    "workspace_actor_id", "other-agent"
+                ),
+                "ambiguous-extra": lambda lock: lock["launch"].__setitem__(
+                    "workspace", {"workspace_id": "shadow"}
+                ),
+                "expiry": lambda lock: lock["launch"]["workspace_grant"].update(
+                    {
+                        "issued_at_unix_ms": 1,
+                        "expires_at_unix_ms": 2,
+                    }
+                ),
+            }
+            for name, mutate in mutations.items():
+                with self.subTest(name=name):
+                    changed = copy.deepcopy(healthy)
+                    mutate(changed)
+                    lock_path.write_text(
+                        json.dumps(changed, indent=2, sort_keys=True) + "\n",
+                        encoding="utf-8",
+                    )
+                    with mock.patch.object(sync, "raw_tools_list") as live_probe:
+                        checked = self.run_sync(
+                            "--project",
+                            str(project),
+                            "--agent",
+                            "coordinator",
+                            "--check",
+                        )
+                    self.assertEqual(checked[0], 1)
+                    live_probe.assert_not_called()
+
+    def test_expiry_is_revalidated_immediately_before_journal_creation(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            _, agent = self.make_project(root)
+            now_unix_ms = time.time_ns() // 1_000_000
+            grant = self.canonical_grant(
+                role="reader",
+                issued_at_unix_ms=now_unix_ms - 1_000,
+                expires_at_unix_ms=now_unix_ms + 60_000,
+            )
+            config = sync.installer.InstallConfig(
+                nokv_bin="/immutable/nokv",
+                server_bind="127.0.0.1:7799",
+                object_backend="rustfs",
+                s3_endpoint="http://127.0.0.1:9000",
+                s3_bucket="bucket",
+                workbench_root="/agents/{agent_id}/wb",
+                profile="lingtai",
+                workspace_id="team-alpha",
+                workspace_actor_id="agent-7",
+                workspace_grant=grant,
+            )
+            parsed = sync.installer.parsed_workspace_grant(config)
+            assert parsed is not None
+            paths = sync._transaction_files(agent)
+            before = {
+                name: sync.installer.read_regular_text(path, missing_ok=True)
+                for name, path in paths.items()
+            }
+
+            with self.assertRaisesRegex(ValueError, "not current"):
+                sync.apply_agent_update(
+                    agent,
+                    config,
+                    agent / sync.LOCK_NAME,
+                    "{}\n",
+                    now_unix_ms=parsed.expires_at_unix_ms,
+                )
+
+            self.assertEqual(
+                {
+                    name: sync.installer.read_regular_text(path, missing_ok=True)
+                    for name, path in paths.items()
+                },
+                before,
+            )
+            self.assertFalse((agent / sync.TRANSACTION_NAME).exists())
+
+    def test_stale_preflight_state_cannot_overwrite_newer_agent_configuration(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            _, agent = self.make_project(root)
+            config = sync.installer.InstallConfig(
+                nokv_bin="/immutable/nokv",
+                server_bind="127.0.0.1:7799",
+                object_backend="rustfs",
+                s3_endpoint="http://127.0.0.1:9000",
+                s3_bucket="bucket",
+                workbench_root="/agents/{agent_id}/wb",
+            )
+            preflight_state = sync.read_agent_state(agent)
+            precondition = sync.agent_state_sha256(preflight_state)
+            (agent / "init.json").write_text(
+                '{"mcp": {}, "newer": true}\n', encoding="utf-8"
+            )
+            newer_state = sync.read_agent_state(agent)
+
+            with self.assertRaisesRegex(
+                RuntimeError, "changed after rollout preflight"
+            ):
+                sync.apply_agent_update(
+                    agent,
+                    config,
+                    agent / sync.LOCK_NAME,
+                    "{}\n",
+                    expected_original_state_sha256=precondition,
+                )
+
+            self.assertEqual(sync.read_agent_state(agent), newer_state)
+            self.assertFalse((agent / sync.TRANSACTION_NAME).exists())
+
+    def test_old_journal_recovers_before_invalid_new_grant_is_evaluated(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source = self.make_source(root)
+            project, agent = self.make_project(root)
+            binary = self.make_binary(root, lingtai_tool_surface("reader"))
+            paths = sync._transaction_files(agent)
+            original = {
+                name: path.read_text(encoding="utf-8") if path.exists() else None
+                for name, path in paths.items()
+            }
+            desired = {
+                "mcp_registry.jsonl": '{"old":"workbench"}\n',
+                "init.json": '{"old":"workbench"}\n',
+                sync.LOCK_NAME: '{"old":"workbench"}\n',
+            }
+            (agent / sync.TRANSACTION_NAME).write_text(
+                json.dumps(
+                    {
+                        "schema": sync.TRANSACTION_SCHEMA,
+                        "original": original,
+                        "desired": desired,
+                    }
+                ),
+                encoding="utf-8",
+            )
+            paths["mcp_registry.jsonl"].write_text(
+                desired["mcp_registry.jsonl"], encoding="utf-8"
+            )
+
+            rejected = self.run_sync(
+                *self.sync_args(
+                    project,
+                    source,
+                    binary,
+                    profile="lingtai",
+                    grant="not-a-canonical-grant",
+                )
+            )
+
+            self.assertEqual(rejected[0], 1)
+            self.assertFalse((agent / sync.TRANSACTION_NAME).exists())
+            for name, path in paths.items():
+                if original[name] is None:
+                    self.assertFalse(path.exists())
+                else:
+                    self.assertEqual(path.read_text(encoding="utf-8"), original[name])
+
+    def test_recovery_all_partial_combinations_and_all_desired_commit(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            for direction in ("workbench-to-lingtai", "lingtai-to-workbench"):
+                for mask in range(8):
+                    with self.subTest(direction=direction, mask=mask):
+                        _, agent = self.make_project(root / f"{direction}-{mask}")
+                        paths = sync._transaction_files(agent)
+                        original = {
+                            name: f"{direction}:original:{name}\n"
+                            for name in paths
+                        }
+                        desired = {
+                            name: f"{direction}:desired:{name}\n" for name in paths
+                        }
+                        for name, path in paths.items():
+                            path.write_text(original[name], encoding="utf-8")
+                        (agent / sync.TRANSACTION_NAME).write_text(
+                            json.dumps(
+                                {
+                                    "schema": sync.TRANSACTION_SCHEMA,
+                                    "original": original,
+                                    "desired": desired,
+                                }
+                            ),
+                            encoding="utf-8",
+                        )
+                        for index, (name, path) in enumerate(paths.items()):
+                            if mask & (1 << index):
+                                path.write_text(desired[name], encoding="utf-8")
+
+                        self.assertTrue(sync.recover_interrupted_update(agent))
+
+                        expected = desired if mask == 7 else original
+                        self.assertEqual(
+                            {
+                                name: path.read_text(encoding="utf-8")
+                                for name, path in paths.items()
+                            },
+                            expected,
+                        )
+                        self.assertFalse((agent / sync.TRANSACTION_NAME).exists())
+
+    def test_each_target_failpoint_rolls_back_both_profile_directions(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source = self.make_source(root)
+            workbench_binary = self.make_binary(root, tool_surface(), "nokv-wb")
+            lingtai_tools = lingtai_tool_surface("reader")
+            lingtai_binary = self.make_binary(root, lingtai_tools, "nokv-lingtai")
+            lingtai_digest = contract.raw_tool_definitions_sha256(lingtai_tools)
+            for direction in ("workbench-to-lingtai", "lingtai-to-workbench"):
+                for failed_name in (
+                    "mcp_registry.jsonl",
+                    "init.json",
+                    sync.LOCK_NAME,
+                ):
+                    with self.subTest(direction=direction, failed_name=failed_name):
+                        project, agent = self.make_project(
+                            root / f"{direction}-{failed_name}"
+                        )
+                        with mock.patch.dict(
+                            contract.FROZEN_LINGTAI_PROFILE_DIGESTS,
+                            {"reader": lingtai_digest},
+                        ):
+                            if direction == "workbench-to-lingtai":
+                                initial_args = self.sync_args(
+                                    project, source, workbench_binary
+                                )
+                                next_args = self.sync_args(
+                                    project,
+                                    source,
+                                    lingtai_binary,
+                                    profile="lingtai",
+                                    role="reader",
+                                )
+                            else:
+                                initial_args = self.sync_args(
+                                    project,
+                                    source,
+                                    lingtai_binary,
+                                    profile="lingtai",
+                                    role="reader",
+                                )
+                                next_args = (
+                                    *self.sync_args(
+                                        project, source, workbench_binary
+                                    ),
+                                    "--profile",
+                                    "workbench",
+                                )
+                            installed = self.run_sync(*initial_args)
+                            self.assertEqual(installed[0], 0, installed[2])
+                            paths = sync._transaction_files(agent)
+                            before = {
+                                name: path.read_bytes() for name, path in paths.items()
+                            }
+                            real_write = sync.installer.write_text_if_changed
+                            failed = False
+
+                            def fail_target(path: Path, text: str) -> bool:
+                                nonlocal failed
+                                if path.name == failed_name and not failed:
+                                    failed = True
+                                    raise OSError(f"injected {failed_name} failure")
+                                return real_write(path, text)
+
+                            with mock.patch.object(
+                                sync.installer,
+                                "write_text_if_changed",
+                                side_effect=fail_target,
+                            ):
+                                rejected = self.run_sync(*next_args)
+
+                        self.assertEqual(rejected[0], 1)
+                        self.assertTrue(failed)
+                        self.assertEqual(
+                            {name: path.read_bytes() for name, path in paths.items()},
+                            before,
+                        )
+                        self.assertFalse((agent / sync.TRANSACTION_NAME).exists())
+
+    def test_lingtai_manual_registry_drift_fails_closed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source = self.make_source(root)
+            project, agent = self.make_project(root)
+            tools = lingtai_tool_surface("reader")
+            binary = self.make_binary(root, tools)
+            digest = contract.raw_tool_definitions_sha256(tools)
+            with mock.patch.dict(
+                contract.FROZEN_LINGTAI_PROFILE_DIGESTS,
+                {"reader": digest},
+            ):
+                installed = self.run_sync(
+                    *self.sync_args(
+                        project,
+                        source,
+                        binary,
+                        profile="lingtai",
+                        role="reader",
+                    )
+                )
+            self.assertEqual(installed[0], 0, installed[2])
+            registry_path = agent / "mcp_registry.jsonl"
+            registry = json.loads(registry_path.read_text(encoding="utf-8"))
+            registry["args"][registry["args"].index("team-alpha")] = "other-team"
+            registry_path.write_text(json.dumps(registry) + "\n", encoding="utf-8")
+
+            with mock.patch.object(sync, "raw_tools_list") as live_probe:
+                checked = self.run_sync(
+                    "--project",
+                    str(project),
+                    "--agent",
+                    "coordinator",
+                    "--check",
+                )
+
+            self.assertEqual(checked[0], 1)
+            self.assertIn("registry does not match", checked[2])
+            live_probe.assert_not_called()
+
+    def test_grant_replacement_changes_one_digest_and_all_three_targets(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source = self.make_source(root)
+            project, agent = self.make_project(root)
+            tools = lingtai_tool_surface("reader")
+            binary = self.make_binary(root, tools)
+            digest = contract.raw_tool_definitions_sha256(tools)
+            old_grant = self.canonical_grant(role="reader", grant_id="grant_old")
+            new_grant = self.canonical_grant(role="reader", grant_id="grant_new")
+            with mock.patch.dict(
+                contract.FROZEN_LINGTAI_PROFILE_DIGESTS,
+                {"reader": digest},
+            ):
+                first = self.run_sync(
+                    *self.sync_args(
+                        project,
+                        source,
+                        binary,
+                        profile="lingtai",
+                        grant=old_grant,
+                    )
+                )
+                self.assertEqual(first[0], 0, first[2])
+                old_lock = json.loads(
+                    (agent / sync.LOCK_NAME).read_text(encoding="utf-8")
+                )
+                second = self.run_sync(
+                    *self.sync_args(
+                        project,
+                        source,
+                        binary,
+                        profile="lingtai",
+                        grant=new_grant,
+                    )
+                )
+                checked = self.run_sync(
+                    "--project",
+                    str(project),
+                    "--agent",
+                    "coordinator",
+                    "--check",
+                )
+
+            self.assertEqual(second[0], 0, second[2])
+            self.assertEqual(checked[0], 0, checked[2])
+            new_lock = json.loads(
+                (agent / sync.LOCK_NAME).read_text(encoding="utf-8")
+            )
+            self.assertNotEqual(
+                old_lock["launch"]["args_sha256"],
+                new_lock["launch"]["args_sha256"],
+            )
+            self.assertEqual(
+                new_lock["launch"]["workspace_grant"]["grant_id"], "grant_new"
+            )
+            registry = json.loads(
+                (agent / "mcp_registry.jsonl").read_text(encoding="utf-8")
+            )
+            init = json.loads((agent / "init.json").read_text(encoding="utf-8"))
+            self.assertIn(new_grant, registry["args"])
+            self.assertNotIn(old_grant, registry["args"])
+            self.assertEqual(
+                registry["args"], init["mcp"][registry["name"]]["args"]
+            )
+
+    def test_lingtai_role_contract_transition_requires_exact_acceptance(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source = self.make_source(root)
+            project, agent = self.make_project(root)
+            reader_tools = lingtai_tool_surface("reader")
+            writer_tools = lingtai_tool_surface("writer")
+            reader_binary = self.make_binary(root, reader_tools, "nokv-reader")
+            writer_binary = self.make_binary(root, writer_tools, "nokv-writer")
+            reader_digest = contract.raw_tool_definitions_sha256(reader_tools)
+            writer_digest = contract.raw_tool_definitions_sha256(writer_tools)
+            with mock.patch.dict(
+                contract.FROZEN_LINGTAI_PROFILE_DIGESTS,
+                {"reader": reader_digest, "writer": writer_digest},
+            ):
+                installed = self.run_sync(
+                    *self.sync_args(
+                        project,
+                        source,
+                        reader_binary,
+                        profile="lingtai",
+                        role="reader",
+                    )
+                )
+                self.assertEqual(installed[0], 0, installed[2])
+                before = {
+                    name: path.read_bytes()
+                    for name, path in sync._transaction_files(agent).items()
+                }
+                writer_args = self.sync_args(
+                    project,
+                    source,
+                    writer_binary,
+                    profile="lingtai",
+                    role="writer",
+                )
+                rejected = self.run_sync(*writer_args)
+                after_rejected = {
+                    name: path.read_bytes()
+                    for name, path in sync._transaction_files(agent).items()
+                }
+                expected = contract.expected_profile_contract_evidence(
+                    "lingtai", role="writer"
+                )["contract_sha256"]
+                accepted = self.run_sync(
+                    *writer_args,
+                    "--accept-contract-sha256",
+                    expected,
+                )
+
+            self.assertEqual(rejected[0], 1)
+            self.assertIn(f"--accept-contract-sha256 {expected}", rejected[2])
+            self.assertEqual(after_rejected, before)
+            self.assertNotEqual(
+                {
+                    name: path.read_bytes()
+                    for name, path in sync._transaction_files(agent).items()
+                },
+                before,
+            )
+            self.assertEqual(accepted[0], 0, accepted[2])
+            lock = json.loads((agent / sync.LOCK_NAME).read_text(encoding="utf-8"))
+            self.assertEqual(lock["contract"]["role"], "writer")
+
+    def test_sync_lock_is_held_across_processes(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            project, agent = self.make_project(root)
+            holder = subprocess.Popen(
+                [
+                    sys.executable,
+                    "-c",
+                    (
+                        "import sys; from pathlib import Path; "
+                        f"sys.path.insert(0, {str(SCRIPT_DIR)!r}); "
+                        "import sync_workbench_mcp as s; "
+                        f"a=Path({str(agent)!r}); "
+                        "c=s.agent_sync_lock(a, exclusive=True); c.__enter__(); "
+                        "print('locked', flush=True); sys.stdin.readline(); "
+                        "c.__exit__(None, None, None)"
+                    ),
+                ],
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+            )
+            try:
+                assert holder.stdout is not None
+                self.assertEqual(holder.stdout.readline().strip(), "locked")
+                blocked = self.run_sync(
+                    "--project",
+                    str(project),
+                    "--agent",
+                    "coordinator",
+                    "--preflight-only",
+                )
+                self.assertEqual(blocked[0], 1)
+                self.assertIn("another NoKV workbench sync is active", blocked[2])
+            finally:
+                if holder.stdin is not None:
+                    holder.stdin.write("release\n")
+                    holder.stdin.flush()
+                    holder.stdin.close()
+                holder.wait(timeout=5)
+                if holder.stdout is not None:
+                    holder.stdout.close()
+                if holder.stderr is not None:
+                    holder.stderr.close()
+
+    def test_orchestration_identity_token_mismatch_fails_before_agent_access(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            project, agent = self.make_project(root)
+            _, token = sync.capture_agent_identity(project, "coordinator")
+            identity = sync.parse_agent_identity_token(token)
+            mismatched = sync.encode_agent_identity_token(
+                sync.AgentIdentityToken(
+                    **{
+                        **identity.__dict__,
+                        "agent_ino": identity.agent_ino + 1,
+                    }
+                )
+            )
+            before = (agent / "init.json").read_bytes()
+
+            result = self.run_sync(
+                "--project",
+                str(project),
+                "--agent",
+                "coordinator",
+                "--orchestration-agent-identity",
+                mismatched,
+                "--preflight-only",
+            )
+
+            self.assertEqual(result[0], 1)
+            self.assertIn("Agent directory identity changed", result[2])
+            self.assertEqual((agent / "init.json").read_bytes(), before)
+            self.assertFalse((agent / sync.SYNC_LOCK_NAME).exists())
+
+    def test_held_agent_descriptor_cannot_be_retargeted_by_name_replacement(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            project, agent = self.make_project(root)
+            _, token = sync.capture_agent_identity(project, "coordinator")
+            moved = agent.with_name("coordinator-original")
+
+            with sync.open_agent_directory(
+                project, "coordinator", None, token
+            ) as handle:
+                with sync.agent_sync_lock(handle.state_path, exclusive=True):
+                    handle.verify_current()
+                    agent.rename(moved)
+                    agent.mkdir()
+                    (agent / "init.json").write_text(
+                        '{"replacement": true}\n', encoding="utf-8"
+                    )
+                    # Models a replacement after the production final identity
+                    # check: relative writes still use the held Agent descriptor.
+                    sync.installer.write_text_if_changed(
+                        handle.state_path / "anchored.txt", "original\n"
+                    )
+
+            self.assertEqual(
+                (moved / "anchored.txt").read_text(encoding="utf-8"), "original\n"
+            )
+            self.assertFalse((agent / "anchored.txt").exists())
+
+    def test_check_rejects_agent_replacement_during_live_probe(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            project, agent = self.make_project(root)
+            (agent / sync.SYNC_LOCK_NAME).touch()
+            _, token = sync.capture_agent_identity(project, "coordinator")
+            moved = agent.with_name("coordinator-original")
+
+            def replace_agent(*args, **kwargs):
+                agent.rename(moved)
+                agent.mkdir()
+                (agent / "init.json").write_text(
+                    '{"replacement": true}\n', encoding="utf-8"
+                )
+                return {"launch": {"profile": "workbench"}}
+
+            with mock.patch.object(sync, "check_lock", side_effect=replace_agent):
+                checked = self.run_sync(
+                    "--project",
+                    str(project),
+                    "--agent",
+                    "coordinator",
+                    "--orchestration-agent-identity",
+                    token,
+                    "--check",
+                )
+
+            self.assertEqual(checked[0], 1)
+            self.assertIn("replaced after selection", checked[2])
+            self.assertNotIn("lock_valid: true", checked[1])
+            self.assertNotIn("live_contract_valid: true", checked[1])
+
+    def test_check_rejects_agent_rename_before_live_probe(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source = self.make_source(root)
+            project, agent = self.make_project(root)
+            binary = self.make_binary(root, tool_surface())
+            installed = self.run_sync(*self.sync_args(project, source, binary))
+            self.assertEqual(installed[0], 0, installed[2])
+
+            renamed = agent.with_name("coordinator-renamed")
+            agent.rename(renamed)
+            with mock.patch.object(sync, "raw_tools_list") as live_probe:
+                checked = self.run_sync(
+                    "--project",
+                    str(project),
+                    "--agent",
+                    renamed.name,
+                    "--check",
+                )
+
+            self.assertEqual(checked[0], 1)
+            self.assertIn("root expanded for the selected Agent", checked[2])
+            live_probe.assert_not_called()
+            self.assertNotIn("lock_valid: true", checked[1])
+            self.assertNotIn("live_contract_valid: true", checked[1])
+
+    def test_check_resolves_relative_candidate_from_invocation_cwd(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            project, agent = self.make_project(root)
+            (agent / sync.SYNC_LOCK_NAME).touch()
+            candidate = root / "candidate"
+            candidate.write_text("candidate\n", encoding="utf-8")
+            checked_lock = {"launch": {"profile": "workbench"}}
+            original_cwd = Path.cwd()
+            try:
+                os.chdir(root)
+                with mock.patch.object(
+                    sync, "check_lock", return_value=checked_lock
+                ) as check_lock:
+                    checked = self.run_sync(
+                        "--project",
+                        str(project),
+                        "--agent",
+                        "coordinator",
+                        "--check",
+                        "--nokv-bin",
+                        candidate.name,
+                    )
+            finally:
+                os.chdir(original_cwd)
+
+            self.assertEqual(checked[0], 0, checked[2])
+            self.assertIn("lock_valid: true", checked[1])
+            check_lock.assert_called_once_with(
+                Path("."),
+                agent_display_path=agent.resolve(),
+                candidate_binary=str(candidate.resolve()),
+                timeout_seconds=20.0,
+            )
+
+    def test_orchestration_identity_option_rejects_duplicate_and_malformed_tokens(self):
+        for argv, expected in (
+            (
+                [
+                    "--orchestration-agent-identity",
+                    "bad",
+                    "--orchestration-agent-identity",
+                    "also-bad",
+                ],
+                "may be specified only once",
+            ),
+            (
+                ["--orchestration-agent-identity", "not-a-token"],
+                "identity token is malformed",
+            ),
+            (
+                [
+                    "--orchestration-agent-state-sha256",
+                    "a" * 64,
+                    "--orchestration-agent-state-sha256",
+                    "b" * 64,
+                ],
+                "may be specified only once",
+            ),
+            (
+                ["--orchestration-agent-state-sha256", "not-a-digest"],
+                "SHA-256",
+            ),
+        ):
+            with self.subTest(argv=argv):
+                stderr = io.StringIO()
+                with contextlib.redirect_stderr(stderr):
+                    with self.assertRaises(SystemExit) as raised:
+                        sync.parse_args(argv)
+                self.assertEqual(raised.exception.code, 2)
+                self.assertIn(expected, stderr.getvalue())
+
+    def test_check_rejects_explicitly_empty_workspace_overrides(self):
+        for option in (
+            "--workspace-id",
+            "--workspace-actor-id",
+            "--workspace-grant",
+        ):
+            with self.subTest(option=option):
+                stderr = io.StringIO()
+                with contextlib.redirect_stderr(stderr):
+                    with self.assertRaises(SystemExit) as raised:
+                        sync.parse_args(["--check", option, ""])
+                self.assertEqual(raised.exception.code, 2)
+                self.assertIn("reconstructed from the lock", stderr.getvalue())
+
+    def test_profile_and_workspace_singletons_reject_all_duplicates(self):
+        duplicate_values = {
+            "--profile": ("workbench", "lingtai"),
+            "--workspace-id": ("team-alpha", "team-beta"),
+            "--workspace-actor-id": ("agent-7", "agent-8"),
+            "--workspace-grant": (
+                "secret-grant-first",
+                "secret-grant-second",
+            ),
+        }
+        for option, (first, conflicting) in duplicate_values.items():
+            for second in (first, conflicting):
+                with self.subTest(option=option, conflict=second != first):
+                    stderr = io.StringIO()
+                    with contextlib.redirect_stderr(stderr):
+                        with self.assertRaises(SystemExit) as raised:
+                            sync.parse_args([option, first, option, second])
+                    diagnostic = stderr.getvalue()
+                    self.assertEqual(raised.exception.code, 2)
+                    self.assertIn(f"{option} may be specified only once", diagnostic)
+                    if option == "--workspace-grant":
+                        self.assertNotIn(first, diagnostic)
+                        self.assertNotIn(second, diagnostic)
 
     def test_contract_evidence_ignores_descriptions_but_rejects_order(self):
         original = tool_surface()

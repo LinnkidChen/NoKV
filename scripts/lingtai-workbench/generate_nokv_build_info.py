@@ -15,7 +15,7 @@ from nokv_runtime import source_identity, write_build_info
 
 def parse_args(argv: list[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Generate nokv.build_info.v1 from a locked NoKV checkout."
+        description="Generate versioned build identity from a locked NoKV checkout."
     )
     parser.add_argument("--source-root", default=".")
     parser.add_argument(
@@ -52,7 +52,11 @@ def main(argv: list[str]) -> int:
     print(f"output: {Path(args.output).expanduser().resolve()}")
     print(f"changed: {str(changed).lower()}")
     print(f"nokv_revision: {identity.nokv_git_commit}")
-    print(f"holt_revision: {identity.holt_git_commit}")
+    if identity.holt_git_commit is not None:
+        print(f"holt_revision: {identity.holt_git_commit}")
+    else:
+        print(f"holt_registry: {identity.holt_registry}")
+        print(f"holt_checksum_sha256: {identity.holt_checksum_sha256}")
     return 0
 
 

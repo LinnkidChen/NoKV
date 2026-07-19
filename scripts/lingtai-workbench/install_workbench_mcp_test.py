@@ -3,15 +3,20 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import importlib.util
+import base64
+import contextlib
+import io
 import json
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 
 
 sys.dont_write_bytecode = True
 MODULE_PATH = Path(__file__).with_name("install_workbench_mcp.py")
+sys.path.insert(0, str(MODULE_PATH.parent))
 
 
 def load_module():
@@ -67,6 +72,200 @@ class InstallWorkbenchMcpTest(unittest.TestCase):
             s3_bucket="nokv-lingtai-workbench",
             workbench_root="/workbenches",
         )
+
+    def canonical_grant(
+        self,
+        *,
+        workspace_id="team-alpha",
+        actor_id="agent-7",
+        role="writer",
+        issued_at_unix_ms=None,
+        expires_at_unix_ms=None,
+    ):
+        now = time.time_ns() // 1_000_000
+        grant = {
+            "schema": "nokv.lingtai.workspace_grant.v1",
+            "grant_id": "grant_1",
+            "issuer": "lingtai-workbench-sync",
+            "audience": "nokv-mcp:lingtai",
+            "workspace_id": workspace_id,
+            "actor_id": actor_id,
+            "role": role,
+            "issued_at_unix_ms": (
+                now - 1_000 if issued_at_unix_ms is None else issued_at_unix_ms
+            ),
+            "expires_at_unix_ms": (
+                now + 60_000 if expires_at_unix_ms is None else expires_at_unix_ms
+            ),
+        }
+        raw = json.dumps(
+            grant,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+        return base64.urlsafe_b64encode(raw).decode("ascii").rstrip("=")
+
+    def lingtai_config(self, **overrides):
+        values = {
+            "nokv_bin": "/repo/target/debug/nokv",
+            "server_bind": "127.0.0.1:7799",
+            "object_backend": "rustfs",
+            "s3_endpoint": "http://127.0.0.1:9000",
+            "s3_bucket": "nokv-lingtai-workbench",
+            "workbench_root": "/workbenches",
+            "profile": "lingtai",
+            "workspace_id": "team-alpha",
+            "workspace_actor_id": "agent-7",
+            "workspace_grant": self.canonical_grant(),
+        }
+        values.update(overrides)
+        return self.module.InstallConfig(**values)
+
+    def test_default_profile_preserves_exact_workbench_arguments(self):
+        self.assertEqual(
+            self.module.mcp_args(self.config()),
+            [
+                "--server-bind",
+                "127.0.0.1:7799",
+                "--object-backend",
+                "rustfs",
+                "--s3-endpoint",
+                "http://127.0.0.1:9000",
+                "--s3-bucket",
+                "nokv-lingtai-workbench",
+                "mcp",
+                "--profile",
+                "workbench",
+                "--workbench-root",
+                "/workbenches",
+            ],
+        )
+
+    def test_lingtai_arguments_have_stable_profile_root_identity_grant_order(self):
+        config = self.lingtai_config()
+
+        args = self.module.mcp_args(config)
+
+        self.assertEqual(
+            args[-10:],
+            [
+                "--profile",
+                "lingtai",
+                "--workbench-root",
+                "/workbenches",
+                "--workspace-id",
+                "team-alpha",
+                "--workspace-actor-id",
+                "agent-7",
+                "--workspace-grant",
+                config.workspace_grant,
+            ],
+        )
+        self.assertNotIn("--workspace-dev-membership", args)
+
+    def test_lingtai_configures_registry_and_init_with_the_same_exact_args(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            agent_dir = self.make_agent(Path(tmp))
+            config = self.lingtai_config()
+
+            self.module.configure_agent(agent_dir, config)
+
+            registry = json.loads(
+                (agent_dir / "mcp_registry.jsonl").read_text(encoding="utf-8")
+            )
+            init = json.loads((agent_dir / "init.json").read_text(encoding="utf-8"))
+            self.assertEqual(registry["args"], self.module.mcp_args(config))
+            self.assertEqual(init["mcp"]["nokv-workbench"]["args"], registry["args"])
+
+    def test_profile_and_workspace_tuple_fail_closed(self):
+        with self.assertRaisesRegex(ValueError, "unsupported MCP profile"):
+            self.module.InstallConfig(
+                **{**self.config().__dict__, "profile": "developer"}
+            )
+
+        for field, value in (
+            ("workspace_id", "team-alpha"),
+            ("workspace_actor_id", "agent-7"),
+            ("workspace_grant", self.canonical_grant()),
+        ):
+            with self.subTest(field=field):
+                with self.assertRaisesRegex(ValueError, "workbench"):
+                    self.module.InstallConfig(
+                        **{**self.config().__dict__, field: value}
+                    )
+
+        for field in ("workspace_id", "workspace_actor_id", "workspace_grant"):
+            with self.subTest(missing=field):
+                with self.assertRaisesRegex(ValueError, "complete"):
+                    self.lingtai_config(**{field: None})
+
+    def test_lingtai_rejects_noncanonical_expired_or_conflicting_grant(self):
+        now = time.time_ns() // 1_000_000
+        invalid = (
+            "not-base64",
+            self.canonical_grant(
+                expires_at_unix_ms=now,
+                issued_at_unix_ms=now - 1_000,
+            ),
+            self.canonical_grant(actor_id="other-agent"),
+        )
+        for grant in invalid:
+            with self.subTest(grant=grant):
+                with self.assertRaises(ValueError):
+                    self.lingtai_config(workspace_grant=grant)
+
+    def test_raw_cli_accepts_supported_tuple_and_has_no_dev_membership(self):
+        grant = self.canonical_grant()
+
+        parsed = self.module.parse_args(
+            [
+                "--profile",
+                "lingtai",
+                "--workspace-id",
+                "team-alpha",
+                "--workspace-actor-id",
+                "agent-7",
+                "--workspace-grant",
+                grant,
+            ]
+        )
+
+        self.assertEqual(parsed.profile, "lingtai")
+        self.assertEqual(parsed.workspace_grant, grant)
+        self.assertFalse(
+            hasattr(parsed, self.module._SINGLETON_OPTIONS_SEEN),
+            "internal duplicate-tracking state must not leak into parsed CLI API",
+        )
+        with contextlib.redirect_stderr(io.StringIO()):
+            with self.assertRaises(SystemExit):
+                self.module.parse_args(["--workspace-dev-membership", "writer"])
+
+    def test_identity_critical_cli_flags_reject_same_and_conflicting_duplicates(self):
+        cases = (
+            ("--profile", "workbench", "workbench"),
+            ("--profile", "workbench", "lingtai"),
+            ("--workspace-id", "team-alpha", "team-alpha"),
+            ("--workspace-id", "team-alpha", "team-beta"),
+            ("--workspace-actor-id", "agent-7", "agent-7"),
+            ("--workspace-actor-id", "agent-7", "agent-8"),
+            ("--workspace-grant", "grant-secret-one", "grant-secret-one"),
+            ("--workspace-grant", "grant-secret-one", "grant-secret-two"),
+        )
+        for option, first, second in cases:
+            with self.subTest(option=option, first=first, second=second):
+                stderr = io.StringIO()
+                with contextlib.redirect_stderr(stderr):
+                    with self.assertRaises(SystemExit) as raised:
+                        self.module.parse_args([option, first, option, second])
+
+                self.assertEqual(raised.exception.code, 2)
+                error = stderr.getvalue()
+                self.assertIn(option, error)
+                self.assertIn("may be specified at most once", error)
+                if option == "--workspace-grant":
+                    self.assertNotIn(first, error)
+                    self.assertNotIn(second, error)
 
     def test_install_adds_registry_and_init_entries(self):
         with tempfile.TemporaryDirectory() as tmp:

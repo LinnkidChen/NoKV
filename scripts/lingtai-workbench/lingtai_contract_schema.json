@@ -1,0 +1,289 @@
+{
+  "schema": "nokv.lingtai.mcp_profile_contract.v1",
+  "workbenchPrefixCount": 18,
+  "profileDigests": {
+    "reader": "e008fc0a776c3348ec0ddae3db9eebc01ea37eed3b723a86004eae110d94fc2f",
+    "writer": "1e3f09616286dcd8069f91319bfaee356ce79bf705f0806a38b38b7b972989f1"
+  },
+  "roleToolOrder": {
+    "reader": [
+      "workspace_list",
+      "workspace_read"
+    ],
+    "writer": [
+      "workspace_list",
+      "workspace_read",
+      "workspace_put_file",
+      "workspace_edit",
+      "workspace_append"
+    ]
+  },
+  "sharedToolDefinitions": {
+    "workspace_list": {
+      "description": "List one non-recursive page of direct children under a workspace-relative directory.",
+      "inputSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "path": {
+            "description": "Missing, null, or empty means the shared root; otherwise a valid relative path.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "offset": {
+            "description": "Zero-based direct-child offset. A positive offset requires if_read_version from the preceding page.",
+            "maximum": 18446744073709551615,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "if_read_version": {
+            "description": "NoKV namespace read version returned by a preceding page, or null only for an initial offset-zero page.",
+            "maximum": 18446744073709551615,
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "limit": {
+            "description": "Maximum direct-child entries in this page.",
+            "maximum": 100,
+            "minimum": 1,
+            "type": "integer"
+          }
+        }
+      }
+    },
+    "workspace_read": {
+      "description": "Read one typed page from a workspace-relative file through the NoKV paged-read primitive.",
+      "inputSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "path"
+        ],
+        "properties": {
+          "path": {
+            "description": "Workspace-relative file path.",
+            "type": "string"
+          },
+          "format": {
+            "description": "structured returns typed records; bytes returns raw bytes encoded in the success envelope.",
+            "enum": [
+              "structured",
+              "bytes"
+            ],
+            "type": "string"
+          },
+          "offset": {
+            "description": "Starting record index in structured format or starting byte offset in bytes format. A positive offset requires if_generation from the preceding page.",
+            "maximum": 18446744073709551615,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "if_generation": {
+            "description": "File generation returned by a preceding page, or null only for an initial offset-zero page.",
+            "maximum": 18446744073709551615,
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "limit": {
+            "description": "Maximum records in structured format or bytes in bytes format.",
+            "maximum": 300,
+            "minimum": 1,
+            "type": "integer"
+          }
+        }
+      }
+    },
+    "workspace_put_file": {
+      "description": "Idempotent create-only or generation-pinned replace-only publication of one complete workspace file; never upsert.",
+      "inputSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "path",
+          "operation_id",
+          "base_generation"
+        ],
+        "properties": {
+          "path": {
+            "description": "Workspace-relative file path.",
+            "type": "string"
+          },
+          "operation_id": {
+            "description": "Caller-stable idempotency identifier.",
+            "pattern": "^[A-Za-z0-9_-]{1,64}$",
+            "type": "string"
+          },
+          "base_generation": {
+            "description": "Null selects create-only after observing absence; an integer selects replace-only at exactly that observed generation.",
+            "maximum": 18446744073709551615,
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "text": {
+            "description": "Exact UTF-8 payload bytes; empty text is valid.",
+            "type": "string"
+          },
+          "base64": {
+            "description": "Canonical RFC 4648 standard Base64 payload; an empty decoded payload is valid.",
+            "type": "string"
+          },
+          "content_type": {
+            "description": "Visible ASCII content type. Defaults by selected payload field.",
+            "maxLength": 255,
+            "minLength": 1,
+            "pattern": "^[ -~]+$",
+            "type": "string"
+          }
+        },
+        "oneOf": [
+          {
+            "required": [
+              "text"
+            ],
+            "not": {
+              "required": [
+                "base64"
+              ]
+            }
+          },
+          {
+            "required": [
+              "base64"
+            ],
+            "not": {
+              "required": [
+                "text"
+              ]
+            }
+          }
+        ]
+      }
+    },
+    "workspace_edit": {
+      "description": "Idempotently replace exact UTF-8 text at one caller-observed generation.",
+      "inputSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "path",
+          "operation_id",
+          "base_generation",
+          "old_string",
+          "new_string"
+        ],
+        "properties": {
+          "path": {
+            "description": "Workspace-relative file path.",
+            "type": "string"
+          },
+          "operation_id": {
+            "description": "Caller-stable idempotency identifier.",
+            "pattern": "^[A-Za-z0-9_-]{1,64}$",
+            "type": "string"
+          },
+          "base_generation": {
+            "description": "Exact existing generation observed by the caller.",
+            "maximum": 18446744073709551615,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "old_string": {
+            "description": "Non-empty exact UTF-8 string to find.",
+            "minLength": 1,
+            "type": "string"
+          },
+          "new_string": {
+            "description": "Exact UTF-8 replacement; empty is valid.",
+            "type": "string"
+          },
+          "replace_all": {
+            "description": "False requires exactly one match; true replaces every match.",
+            "type": "boolean"
+          }
+        }
+      }
+    },
+    "workspace_append": {
+      "description": "Idempotently append or create one file, pinned to the caller-observed base generation.",
+      "inputSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "path",
+          "operation_id",
+          "base_generation"
+        ],
+        "properties": {
+          "path": {
+            "description": "Workspace-relative file path.",
+            "type": "string"
+          },
+          "operation_id": {
+            "description": "Caller-stable idempotency identifier.",
+            "pattern": "^[A-Za-z0-9_-]{1,64}$",
+            "type": "string"
+          },
+          "base_generation": {
+            "description": "Generation observed by the caller, or null only when the caller observed the path absent.",
+            "maximum": 18446744073709551615,
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "text": {
+            "description": "Exact non-empty UTF-8 delta bytes.",
+            "minLength": 1,
+            "type": "string"
+          },
+          "base64": {
+            "description": "Canonical RFC 4648 standard Base64 encoding of a non-empty delta.",
+            "minLength": 1,
+            "type": "string"
+          },
+          "content_type": {
+            "description": "Visible ASCII content type. On an existing file it must equal the persisted content type; on create it defaults by payload field.",
+            "maxLength": 255,
+            "minLength": 1,
+            "pattern": "^[ -~]+$",
+            "type": "string"
+          }
+        },
+        "oneOf": [
+          {
+            "required": [
+              "text"
+            ],
+            "not": {
+              "required": [
+                "base64"
+              ]
+            }
+          },
+          {
+            "required": [
+              "base64"
+            ],
+            "not": {
+              "required": [
+                "text"
+              ]
+            }
+          }
+        ]
+      }
+    }
+  }
+}

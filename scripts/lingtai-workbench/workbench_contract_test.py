@@ -8,6 +8,7 @@ import copy
 import sys
 import unittest
 from pathlib import Path
+from unittest import mock
 
 
 SCRIPT_DIR = Path(__file__).resolve().parent
@@ -25,6 +26,24 @@ def frozen_tools(*, schema_key: str = "inputSchema") -> list[dict]:
         }
         for name in contract.FROZEN_TOOL_ORDER
     ]
+
+
+def lingtai_tools(role: str, *, schema_key: str = "inputSchema") -> list[dict]:
+    tools = frozen_tools(schema_key=schema_key)
+    suffix_names = contract.FROZEN_LINGTAI_ROLE_TOOL_ORDER[role]
+    tools.extend(
+        {
+            "name": name,
+            "description": contract.FROZEN_SHARED_TOOL_DEFINITIONS[name][
+                "description"
+            ],
+            schema_key: copy.deepcopy(
+                contract.FROZEN_SHARED_TOOL_DEFINITIONS[name]["inputSchema"]
+            ),
+        }
+        for name in suffix_names
+    )
+    return tools
 
 
 def reverse_unordered_arrays(value: object) -> None:
@@ -197,6 +216,226 @@ class WorkbenchContractTest(unittest.TestCase):
             contract.contract_evidence(tools, schema_key="input_schema"),
             contract.expected_contract_evidence(),
         )
+
+    def test_workbench_profile_api_is_byte_compatible(self):
+        tools = frozen_tools()
+        self.assertEqual(
+            contract.profile_contract_evidence(
+                tools,
+                "workbench",
+                role=None,
+            ),
+            contract.contract_evidence(tools),
+        )
+        self.assertEqual(
+            contract.expected_profile_contract_evidence(
+                "workbench",
+                role=None,
+            ),
+            contract.expected_contract_evidence(),
+        )
+
+    def test_expected_lingtai_role_contracts_are_frozen(self):
+        expected = {
+            "reader": (
+                20,
+                "e008fc0a776c3348ec0ddae3db9eebc01ea37eed3b723a86004eae110d94fc2f",
+            ),
+            "writer": (
+                23,
+                "1e3f09616286dcd8069f91319bfaee356ce79bf705f0806a38b38b7b972989f1",
+            ),
+        }
+        for role, (count, raw_digest) in expected.items():
+            with self.subTest(role=role):
+                evidence = contract.expected_profile_contract_evidence(
+                    "lingtai",
+                    role=role,
+                )
+                self.assertEqual(evidence["profile"], "lingtai")
+                self.assertEqual(evidence["role"], role)
+                self.assertEqual(evidence["tool_count"], count)
+                self.assertEqual(evidence["raw_contract_sha256"], raw_digest)
+                self.assertEqual(
+                    evidence["tool_order"][:18],
+                    list(contract.FROZEN_TOOL_ORDER),
+                )
+                self.assertEqual(
+                    evidence["tool_order"][18:],
+                    list(contract.FROZEN_LINGTAI_ROLE_TOOL_ORDER[role]),
+                )
+
+    def test_shared_suffix_contract_matches_provider_handoff(self):
+        expected = {
+            "reader": (
+                ("workspace_list", "workspace_read"),
+                "76f7a6cb9e106c0d7aa4ac8969ba909cdb22464fffcecf4ef87b71a2b04a2fb5",
+            ),
+            "writer": (
+                (
+                    "workspace_list",
+                    "workspace_read",
+                    "workspace_put_file",
+                    "workspace_edit",
+                    "workspace_append",
+                ),
+                "eba00ee41c6e31760470ba495274fa0a7c66a5580404017a4c67e688e1c1ba4e",
+            ),
+        }
+        for role, (order, digest) in expected.items():
+            with self.subTest(role=role):
+                self.assertEqual(
+                    contract.FROZEN_LINGTAI_ROLE_TOOL_ORDER[role],
+                    order,
+                )
+                tools = [
+                    {
+                        "name": name,
+                        **contract.FROZEN_SHARED_TOOL_DEFINITIONS[name],
+                    }
+                    for name in order
+                ]
+                self.assertEqual(
+                    contract.raw_tool_definitions_sha256(tools),
+                    digest,
+                )
+
+    def test_lingtai_profile_accepts_exact_prefix_suffix_and_raw_digest(self):
+        for role in ("reader", "writer"):
+            with self.subTest(role=role):
+                tools = lingtai_tools(role)
+                digest = contract.raw_tool_definitions_sha256(tools)
+                with mock.patch.dict(
+                    contract.FROZEN_LINGTAI_PROFILE_DIGESTS,
+                    {role: digest},
+                ):
+                    evidence = contract.profile_contract_evidence(
+                        tools,
+                        "lingtai",
+                        role=role,
+                    )
+                self.assertEqual(evidence["profile"], "lingtai")
+                self.assertEqual(evidence["role"], role)
+                self.assertEqual(evidence["raw_contract_sha256"], digest)
+
+    def test_lingtai_profile_rejects_missing_extra_and_wrong_role(self):
+        missing = lingtai_tools("reader")[:-1]
+        with self.assertRaisesRegex(
+            contract.WorkbenchContractError,
+            r"^lingtai reader tool surface differs",
+        ):
+            contract.profile_contract_evidence(missing, "lingtai", role="reader")
+
+        extra = lingtai_tools("writer") + [
+            {"name": "unexpected", "description": "extra", "inputSchema": {}}
+        ]
+        with self.assertRaisesRegex(
+            contract.WorkbenchContractError,
+            r"^lingtai writer tool surface differs",
+        ):
+            contract.profile_contract_evidence(extra, "lingtai", role="writer")
+
+        with self.assertRaisesRegex(
+            contract.WorkbenchContractError,
+            r"^lingtai reader tool surface differs",
+        ):
+            contract.profile_contract_evidence(
+                lingtai_tools("writer"),
+                "lingtai",
+                role="reader",
+            )
+
+    def test_lingtai_profile_rejects_prefix_and_suffix_drift(self):
+        prefix_schema = lingtai_tools("reader")
+        prefix_schema[0]["inputSchema"]["maxProperties"] = 999
+        with self.assertRaisesRegex(
+            contract.WorkbenchContractError,
+            r"^workbench_create inputSchema differs",
+        ):
+            contract.profile_contract_evidence(
+                prefix_schema,
+                "lingtai",
+                role="reader",
+            )
+
+        suffix_schema = lingtai_tools("reader")
+        suffix_schema[-1]["inputSchema"]["maxProperties"] = 999
+        with self.assertRaisesRegex(
+            contract.WorkbenchContractError,
+            r"^workspace_read inputSchema differs",
+        ):
+            contract.profile_contract_evidence(
+                suffix_schema,
+                "lingtai",
+                role="reader",
+            )
+
+        suffix_description = lingtai_tools("reader")
+        suffix_description[-1]["description"] = "changed"
+        with self.assertRaisesRegex(
+            contract.WorkbenchContractError,
+            r"^workspace_read description differs",
+        ):
+            contract.profile_contract_evidence(
+                suffix_description,
+                "lingtai",
+                role="reader",
+            )
+
+    def test_lingtai_profile_rejects_order_and_prefix_description_drift(self):
+        suffix_order = lingtai_tools("reader")
+        suffix_order[-2], suffix_order[-1] = suffix_order[-1], suffix_order[-2]
+        with self.assertRaisesRegex(
+            contract.WorkbenchContractError,
+            r"^lingtai reader tools/list order differs",
+        ):
+            contract.profile_contract_evidence(
+                suffix_order,
+                "lingtai",
+                role="reader",
+            )
+
+        prefix_description = lingtai_tools("reader")
+        prefix_description[0]["description"] = "changed"
+        with self.assertRaisesRegex(
+            contract.WorkbenchContractError,
+            r"^lingtai reader raw tool definitions differ",
+        ):
+            contract.profile_contract_evidence(
+                prefix_description,
+                "lingtai",
+                role="reader",
+            )
+
+    def test_profile_and_role_are_validated(self):
+        with self.assertRaisesRegex(
+            contract.WorkbenchContractError,
+            r"^unsupported MCP profile",
+        ):
+            contract.profile_contract_evidence(frozen_tools(), "unknown", role=None)
+        with self.assertRaisesRegex(
+            contract.WorkbenchContractError,
+            r"^unsupported MCP profile",
+        ):
+            contract.profile_contract_evidence(frozen_tools(), [], role=None)
+        with self.assertRaisesRegex(
+            contract.WorkbenchContractError,
+            r"^workbench profile does not accept a workspace role",
+        ):
+            contract.profile_contract_evidence(
+                frozen_tools(),
+                "workbench",
+                role="reader",
+            )
+        with self.assertRaisesRegex(
+            contract.WorkbenchContractError,
+            r"^lingtai profile requires workspace role reader or writer",
+        ):
+            contract.profile_contract_evidence(
+                lingtai_tools("reader"),
+                "lingtai",
+                role=None,
+            )
 
 
 if __name__ == "__main__":

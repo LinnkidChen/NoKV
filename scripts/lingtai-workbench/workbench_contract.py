@@ -36,6 +36,13 @@ BASE_WORKBENCH_TOOLS = {
 WORKBENCH_TOOLS = BASE_WORKBENCH_TOOLS | {RESTORE_TOOL}
 CONTRACT_SNAPSHOT_SCHEMA = "nokv.workbench.mcp_input_schemas.v1"
 CONTRACT_SNAPSHOT_PATH = Path(__file__).with_name("workbench_contract_schema.json")
+LINGTAI_CONTRACT_SNAPSHOT_SCHEMA = "nokv.lingtai.mcp_profile_contract.v1"
+LINGTAI_CONTRACT_SNAPSHOT_PATH = Path(__file__).with_name(
+    "lingtai_contract_schema.json"
+)
+WORKBENCH_PROFILE = "workbench"
+LINGTAI_PROFILE = "lingtai"
+LINGTAI_ROLES = frozenset({"reader", "writer"})
 
 # JSON Schema annotations never change which tool arguments are accepted. Keep
 # them out of the deployment digest so wording-only releases do not require a
@@ -182,6 +189,103 @@ def _load_frozen_contract() -> tuple[dict[str, dict[str, Any]], tuple[str, ...]]
 FROZEN_INPUT_SCHEMAS, FROZEN_TOOL_ORDER = _load_frozen_contract()
 
 
+def _load_frozen_lingtai_contract() -> tuple[
+    dict[str, dict[str, Any]],
+    dict[str, tuple[str, ...]],
+    dict[str, str],
+]:
+    try:
+        snapshot = json.loads(
+            LINGTAI_CONTRACT_SNAPSHOT_PATH.read_text(encoding="utf-8")
+        )
+    except (OSError, json.JSONDecodeError) as err:
+        raise RuntimeError(
+            "cannot load frozen LingTai profile contract "
+            f"{LINGTAI_CONTRACT_SNAPSHOT_PATH}: {err}"
+        ) from err
+    if not isinstance(snapshot, dict):
+        raise RuntimeError("frozen LingTai profile contract must be a JSON object")
+    if snapshot.get("schema") != LINGTAI_CONTRACT_SNAPSHOT_SCHEMA:
+        raise RuntimeError("frozen LingTai profile contract has the wrong schema marker")
+    if snapshot.get("workbenchPrefixCount") != len(FROZEN_TOOL_ORDER):
+        raise RuntimeError(
+            "frozen LingTai profile contract has the wrong Workbench prefix count"
+        )
+
+    role_order = snapshot.get("roleToolOrder")
+    if not isinstance(role_order, dict) or set(role_order) != LINGTAI_ROLES:
+        raise RuntimeError("frozen LingTai profile contract has invalid roleToolOrder")
+    parsed_order: dict[str, tuple[str, ...]] = {}
+    for role in sorted(LINGTAI_ROLES):
+        names = role_order.get(role)
+        if (
+            not isinstance(names, list)
+            or not names
+            or not all(isinstance(name, str) and name for name in names)
+            or len(names) != len(set(names))
+        ):
+            raise RuntimeError(
+                f"frozen LingTai profile contract has invalid {role} tool order"
+            )
+        parsed_order[role] = tuple(names)
+    if not set(parsed_order["reader"]).issubset(parsed_order["writer"]):
+        raise RuntimeError(
+            "frozen LingTai reader tools are not a subset of writer tools"
+        )
+
+    definitions = snapshot.get("sharedToolDefinitions")
+    if not isinstance(definitions, dict) or set(definitions) != set(
+        parsed_order["writer"]
+    ):
+        raise RuntimeError(
+            "frozen LingTai shared definitions differ from the writer tool order"
+        )
+    parsed_definitions: dict[str, dict[str, Any]] = {}
+    for name, definition in definitions.items():
+        if not isinstance(definition, dict) or set(definition) != {
+            "description",
+            "inputSchema",
+        }:
+            raise RuntimeError(f"frozen LingTai definition for {name} is invalid")
+        description = definition.get("description")
+        input_schema = definition.get("inputSchema")
+        if not isinstance(description, str) or not description:
+            raise RuntimeError(
+                f"frozen LingTai definition for {name} has no description"
+            )
+        if not isinstance(input_schema, dict):
+            raise RuntimeError(
+                f"frozen LingTai definition for {name} has no inputSchema"
+            )
+        parsed_definitions[name] = {
+            "description": description,
+            "inputSchema": input_schema,
+        }
+
+    digests = snapshot.get("profileDigests")
+    if not isinstance(digests, dict) or set(digests) != LINGTAI_ROLES:
+        raise RuntimeError("frozen LingTai profile contract has invalid digests")
+    parsed_digests: dict[str, str] = {}
+    for role, digest in digests.items():
+        if (
+            not isinstance(digest, str)
+            or len(digest) != 64
+            or any(character not in "0123456789abcdef" for character in digest)
+        ):
+            raise RuntimeError(
+                f"frozen LingTai profile contract has invalid {role} digest"
+            )
+        parsed_digests[role] = digest
+    return parsed_definitions, parsed_order, parsed_digests
+
+
+(
+    FROZEN_SHARED_TOOL_DEFINITIONS,
+    FROZEN_LINGTAI_ROLE_TOOL_ORDER,
+    FROZEN_LINGTAI_PROFILE_DIGESTS,
+) = _load_frozen_lingtai_contract()
+
+
 def extract_raw_tools(response: Any) -> list[dict[str, Any]]:
     if not isinstance(response, dict):
         raise WorkbenchContractError("tools/list response must be a JSON object")
@@ -300,3 +404,226 @@ def expected_contract_evidence() -> dict[str, Any]:
         for name in FROZEN_TOOL_ORDER
     ]
     return contract_evidence(tools)
+
+
+def raw_tool_definitions_payload(
+    tools: list[dict[str, Any]],
+    *,
+    schema_key: str = "inputSchema",
+) -> list[dict[str, Any]]:
+    """Return the exact ordered MCP definition payload owned by Rust.
+
+    Unlike the legacy Workbench semantic evidence, this payload intentionally
+    retains descriptions and every input-schema annotation. The reviewed
+    LingTai profile digest is over these exact three fields in tools/list order.
+    """
+    payload: list[dict[str, Any]] = []
+    for tool in tools:
+        name = tool.get("name")
+        if not isinstance(name, str) or not name:
+            raise WorkbenchContractError(
+                "tools/list contains a tool without a string name"
+            )
+        description = tool.get("description")
+        if not isinstance(description, str):
+            raise WorkbenchContractError(f"{name} lacks a string description")
+        payload.append(
+            {
+                "name": name,
+                "description": description,
+                "inputSchema": _schema(tool, schema_key),
+            }
+        )
+    return payload
+
+
+def raw_tool_definitions_sha256(
+    tools: list[dict[str, Any]],
+    *,
+    schema_key: str = "inputSchema",
+) -> str:
+    return json_sha256(
+        raw_tool_definitions_payload(tools, schema_key=schema_key)
+    )
+
+
+def _validate_profile_and_role(profile: str, role: str | None) -> None:
+    if not isinstance(profile, str) or profile not in {
+        WORKBENCH_PROFILE,
+        LINGTAI_PROFILE,
+    }:
+        raise WorkbenchContractError(f"unsupported MCP profile: {profile!r}")
+    if profile == WORKBENCH_PROFILE:
+        if role is not None:
+            raise WorkbenchContractError(
+                "workbench profile does not accept a workspace role"
+            )
+        return
+    if not isinstance(role, str) or role not in LINGTAI_ROLES:
+        raise WorkbenchContractError(
+            "lingtai profile requires workspace role reader or writer"
+        )
+
+
+def _lingtai_contract_payload(
+    tools: list[dict[str, Any]],
+    *,
+    schema_key: str,
+) -> list[dict[str, Any]]:
+    return sorted(
+        (
+            {
+                "name": tool["name"],
+                "inputSchema": normalize_schema(_schema(tool, schema_key)),
+            }
+            for tool in tools
+        ),
+        key=lambda item: item["name"],
+    )
+
+
+def _lingtai_contract_evidence(
+    tools: list[dict[str, Any]],
+    *,
+    role: str,
+    raw_contract_sha256: str,
+    schema_key: str,
+) -> dict[str, Any]:
+    payload = _lingtai_contract_payload(tools, schema_key=schema_key)
+    tool_order = [tool["name"] for tool in tools]
+    restore = next(item for item in payload if item["name"] == RESTORE_TOOL)
+    evidence = {
+        "required_capabilities": [REQUIRED_CAPABILITY],
+        "profile": LINGTAI_PROFILE,
+        "role": role,
+        "tool_count": len(payload),
+        "tool_names": [item["name"] for item in payload],
+        "tool_order": tool_order,
+        "tools_schema_sha256": json_sha256(payload),
+        "tool_order_sha256": json_sha256(tool_order),
+        "restore_schema_sha256": json_sha256(restore["inputSchema"]),
+        "raw_contract_sha256": raw_contract_sha256,
+    }
+    return {**evidence, "contract_sha256": json_sha256(evidence)}
+
+
+def _validate_lingtai_contract(
+    tools: list[dict[str, Any]],
+    *,
+    role: str,
+    schema_key: str,
+) -> str:
+    suffix_order = FROZEN_LINGTAI_ROLE_TOOL_ORDER[role]
+    expected_order = (*FROZEN_TOOL_ORDER, *suffix_order)
+    names = [tool.get("name") for tool in tools]
+    if any(not isinstance(name, str) or not name for name in names):
+        raise WorkbenchContractError(
+            f"lingtai {role} tools/list contains a tool without a string name"
+        )
+    if len(set(names)) != len(names):
+        raise WorkbenchContractError(
+            f"lingtai {role} tools/list contains duplicate tool names"
+        )
+    actual = set(names)
+    expected = set(expected_order)
+    if len(names) != len(expected_order) or actual != expected:
+        raise WorkbenchContractError(
+            f"lingtai {role} tool surface differs; "
+            f"missing={sorted(expected - actual)}, "
+            f"extra={sorted(actual - expected)}"
+        )
+    if names != list(expected_order):
+        raise WorkbenchContractError(
+            f"lingtai {role} tools/list order differs from the frozen contract; "
+            f"expected={list(expected_order)}, actual={names}"
+        )
+
+    prefix_count = len(FROZEN_TOOL_ORDER)
+    prefix = tools[:prefix_count]
+    validate_tool_contract(prefix, schema_key=schema_key)
+    validate_tool_order(prefix)
+
+    for tool, name in zip(tools[prefix_count:], suffix_order, strict=True):
+        expected_definition = FROZEN_SHARED_TOOL_DEFINITIONS[name]
+        description = tool.get("description")
+        if description != expected_definition["description"]:
+            raise WorkbenchContractError(
+                f"{name} description differs from the frozen Shared Workspace contract"
+            )
+        actual_schema = _schema(tool, schema_key)
+        expected_schema = expected_definition["inputSchema"]
+        if actual_schema != expected_schema:
+            raise WorkbenchContractError(
+                f"{name} inputSchema differs from the frozen Shared Workspace contract; "
+                f"expected_sha256={json_sha256(expected_schema)}, "
+                f"actual_sha256={json_sha256(actual_schema)}"
+            )
+
+    raw_digest = raw_tool_definitions_sha256(tools, schema_key=schema_key)
+    expected_digest = FROZEN_LINGTAI_PROFILE_DIGESTS[role]
+    if raw_digest != expected_digest:
+        raise WorkbenchContractError(
+            f"lingtai {role} raw tool definitions differ from the frozen contract; "
+            f"expected_sha256={expected_digest}, actual_sha256={raw_digest}"
+        )
+    return raw_digest
+
+
+def profile_contract_evidence(
+    tools: list[dict[str, Any]],
+    profile: str,
+    *,
+    role: str | None = None,
+    schema_key: str = "inputSchema",
+) -> dict[str, Any]:
+    """Validate and describe one exact profile-specific MCP surface.
+
+    The Workbench branch is deliberately a direct call to the legacy evidence
+    function so existing lock bytes remain unchanged. LingTai uses a distinct,
+    role-indexed contract and never widens the frozen 18-tool Workbench gate.
+    """
+    _validate_profile_and_role(profile, role)
+    if profile == WORKBENCH_PROFILE:
+        return contract_evidence(tools, schema_key=schema_key)
+    assert role is not None
+    raw_digest = _validate_lingtai_contract(
+        tools,
+        role=role,
+        schema_key=schema_key,
+    )
+    return _lingtai_contract_evidence(
+        tools,
+        role=role,
+        raw_contract_sha256=raw_digest,
+        schema_key=schema_key,
+    )
+
+
+def expected_profile_contract_evidence(
+    profile: str,
+    *,
+    role: str | None = None,
+) -> dict[str, Any]:
+    """Return checked-in evidence for a supported profile and workspace role."""
+    _validate_profile_and_role(profile, role)
+    if profile == WORKBENCH_PROFILE:
+        return expected_contract_evidence()
+    assert role is not None
+    suffix_order = FROZEN_LINGTAI_ROLE_TOOL_ORDER[role]
+    tools = [
+        {"name": name, "inputSchema": FROZEN_INPUT_SCHEMAS[name]}
+        for name in FROZEN_TOOL_ORDER
+    ]
+    tools.extend(
+        {
+            "name": name,
+            "inputSchema": FROZEN_SHARED_TOOL_DEFINITIONS[name]["inputSchema"],
+        }
+        for name in suffix_order
+    )
+    return _lingtai_contract_evidence(
+        tools,
+        role=role,
+        raw_contract_sha256=FROZEN_LINGTAI_PROFILE_DIGESTS[role],
+        schema_key="inputSchema",
+    )
