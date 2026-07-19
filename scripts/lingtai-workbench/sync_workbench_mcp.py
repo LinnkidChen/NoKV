@@ -851,6 +851,7 @@ def validate_v1_to_v2_template_migration(
     unsafe_fields = unsafe_v1_launch_fields(existing_lock)
     if not unsafe_fields:
         return
+    replacement_fields = set(unsafe_fields)
     required_options = {
         V1_MIGRATION_FIELD_OPTIONS[field] for field in unsafe_fields
     }
@@ -870,14 +871,30 @@ def validate_v1_to_v2_template_migration(
                 V1_MIGRATION_FIELD_OPTIONS["workspace_actor_id"],
             }
         )
+        replacement_fields.difference_update(
+            {"workspace_id", "workspace_actor_id"}
+        )
     elif identity_is_unsafe:
         required_options.update(V1_MIGRATION_IDENTITY_OPTIONS)
+        replacement_fields.update({"workspace_id", "workspace_actor_id"})
     missing_options = sorted(required_options - explicit_options)
     if missing_options:
         raise ValueError(
             "unsafe v1 launch migration lacks explicit reviewed replacement "
             "provenance; provide these options in this invocation before any "
             f"probe or Agent mutation: {', '.join(missing_options)}"
+        )
+    empty_options = sorted(
+        V1_MIGRATION_FIELD_OPTIONS[field]
+        for field in replacement_fields
+        if not isinstance(getattr(desired_config, field), str)
+        or not getattr(desired_config, field)
+    )
+    if empty_options:
+        raise ValueError(
+            "unsafe v1 launch migration refused before Agent mutation: provide "
+            "non-empty concrete literal replacements for these explicitly "
+            f"reviewed options: {', '.join(empty_options)}"
         )
     if not non_root_agent_template_token_indices(desired_config):
         return

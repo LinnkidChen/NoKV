@@ -748,6 +748,36 @@ class SyncWorkbenchMcpTest(unittest.TestCase):
                     before_rejected_sync,
                 )
 
+                with mock.patch.object(sync, "raw_tools_list") as empty_probe:
+                    empty_preflight = self.run_sync(
+                        "--project",
+                        str(project),
+                        "--agent",
+                        "coordinator",
+                        "--preflight-only",
+                        option,
+                        "",
+                    )
+                    empty_sync = self.run_sync(
+                        *self.sync_args(project, source, binary),
+                        option,
+                        "",
+                    )
+
+                for rejected in (empty_preflight, empty_sync):
+                    self.assertEqual(rejected[0], 1)
+                    self.assertIn(
+                        "non-empty concrete literal replacements",
+                        rejected[2],
+                    )
+                    self.assertIn(option, rejected[2])
+                    self.assertNotIn(unsafe_value, rejected[2])
+                empty_probe.assert_not_called()
+                self.assertEqual(
+                    {path: path.read_bytes() for path in state_paths},
+                    before_rejected_sync,
+                )
+
                 preflight = self.run_sync(
                     "--project",
                     str(project),
