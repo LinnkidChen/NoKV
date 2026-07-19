@@ -915,5 +915,25 @@
     }
   },
   "schema": "nokv.workbench.mcp_input_schemas.v1",
+  "toolOrder": [
+    "workbench_create",
+    "workbench_put_file",
+    "workbench_append",
+    "workbench_edit",
+    "workbench_list",
+    "workbench_stat",
+    "workbench_read",
+    "workbench_grep",
+    "workbench_search",
+    "workbench_aggregate",
+    "workbench_catalog",
+    "workbench_find",
+    "workbench_commit",
+    "workbench_snapshot",
+    "workbench_snapshot_renew",
+    "workbench_snapshot_retire",
+    "workbench_snapshot_list",
+    "workbench_restore"
+  ],
   "source": "crates/nokv/src/bin/nokv/workbench_mcp.rs:tool_definitions_for_capabilities(true)"
 }

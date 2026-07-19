@@ -25,7 +25,7 @@ NoKV has two MCP profiles:
 The setup below requires the complete 18-tool Workbench profile. Restore is
 advertised only when every metadata owner that can serve the selected Agent
 root supports `restore_to_fork_v1`; the setup fails closed if the fleet is
-mixed or the schema differs.
+mixed or the frozen schema or tools/list order differs.
 
 ## Before the First Configuration
 
@@ -93,7 +93,7 @@ variables. It performs the following guarded handoff:
 - builds NoKV with the locked `Cargo.lock` and records the exact Holt revision;
 - stages an immutable binary under the LingTai project by NoKV commit and
   binary SHA-256;
-- probes the candidate's exact 18-tool contract against the current metadata
+- probes the candidate's exact ordered 18-tool contract against the current metadata
   endpoint before replacing a running server, then starts or verifies RustFS
   and the helper-managed NoKV metadata server;
 - rechecks the selected Agent's concrete root after the server handoff;
@@ -152,7 +152,7 @@ python3 ./scripts/lingtai-workbench/sync_workbench_mcp.py \
 ```
 
 The check validates the lock, immutable binary and build identity, LingTai
-registry and `init.json`, launch arguments, and the live 18-tool contract. It
+registry and `init.json`, launch arguments, and the live ordered 18-tool contract. It
 uses the same automatic Agent selection as setup. Add the exact `--agent`
 directory name only when the project is ambiguous:
 
@@ -187,7 +187,8 @@ Common failures:
 - **RustFS or bucket failure:** verify the configured endpoint with the AWS CLI
   and inspect `docker logs lingtai-workbench-rustfs` for the default local
   container.
-- **Workbench schema changed:** review the reported canonical contract change.
+- **Workbench contract changed:** review the reported canonical schema and
+  tools/list-order change.
   The error prints the exact new SHA-256. Accept only that reviewed digest:
 
   ```bash

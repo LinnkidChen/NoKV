@@ -144,7 +144,7 @@ def normalize_schema(value: Any) -> Any:
     return normalized
 
 
-def _load_frozen_input_schemas() -> dict[str, dict[str, Any]]:
+def _load_frozen_contract() -> tuple[dict[str, dict[str, Any]], tuple[str, ...]]:
     try:
         snapshot = json.loads(CONTRACT_SNAPSHOT_PATH.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as err:
@@ -165,10 +165,21 @@ def _load_frozen_input_schemas() -> dict[str, dict[str, Any]]:
         raise RuntimeError(
             "frozen workbench contract tool names differ from WORKBENCH_TOOLS"
         )
-    return {name: normalize_schema(schema) for name, schema in schemas.items()}
+    order = snapshot.get("toolOrder")
+    if (
+        not isinstance(order, list)
+        or not all(isinstance(name, str) for name in order)
+        or len(order) != len(set(order))
+        or set(order) != WORKBENCH_TOOLS
+    ):
+        raise RuntimeError("frozen workbench contract has invalid toolOrder")
+    return (
+        {name: normalize_schema(schema) for name, schema in schemas.items()},
+        tuple(order),
+    )
 
 
-FROZEN_INPUT_SCHEMAS = _load_frozen_input_schemas()
+FROZEN_INPUT_SCHEMAS, FROZEN_TOOL_ORDER = _load_frozen_contract()
 
 
 def extract_raw_tools(response: Any) -> list[dict[str, Any]]:
@@ -228,13 +239,24 @@ def validate_tool_contract(
             )
 
 
+def validate_tool_order(tools: list[dict[str, Any]]) -> None:
+    """Require the exact Rust-owned tools/list order from the frozen contract."""
+    names = [tool.get("name") for tool in tools]
+    if names != list(FROZEN_TOOL_ORDER):
+        raise WorkbenchContractError(
+            "workbench tools/list order differs from the frozen Rust contract; "
+            f"expected={list(FROZEN_TOOL_ORDER)}, actual={names}"
+        )
+
+
 def contract_payload(
     tools: list[dict[str, Any]],
     *,
     schema_key: str = "inputSchema",
 ) -> list[dict[str, Any]]:
-    """Return the semantic invocation contract, excluding annotations and order."""
+    """Return the semantic invocation schemas after enforcing the frozen order."""
     validate_tool_contract(tools, schema_key=schema_key)
+    validate_tool_order(tools)
     return sorted(
         (
             {
@@ -253,20 +275,28 @@ def contract_evidence(
     schema_key: str = "inputSchema",
 ) -> dict[str, Any]:
     payload = contract_payload(tools, schema_key=schema_key)
+    tool_order = [tool["name"] for tool in tools]
     restore = next(item for item in payload if item["name"] == RESTORE_TOOL)
-    return {
+    tools_schema_sha256 = json_sha256(payload)
+    tool_order_sha256 = json_sha256(tool_order)
+    evidence = {
         "required_capabilities": [REQUIRED_CAPABILITY],
         "tool_count": len(payload),
         "tool_names": [item["name"] for item in payload],
-        "tools_schema_sha256": json_sha256(payload),
+        "tool_order": tool_order,
+        "tools_schema_sha256": tools_schema_sha256,
+        "tool_order_sha256": tool_order_sha256,
         "restore_schema_sha256": json_sha256(restore["inputSchema"]),
     }
+    # Transition approval is keyed by this digest, so it must cover every
+    # separately recorded field rather than only the schema/order inputs.
+    return {**evidence, "contract_sha256": json_sha256(evidence)}
 
 
 def expected_contract_evidence() -> dict[str, Any]:
     """Return evidence for the checked-in Rust-owned 18-tool contract."""
     tools = [
-        {"name": name, "inputSchema": schema}
-        for name, schema in FROZEN_INPUT_SCHEMAS.items()
+        {"name": name, "inputSchema": FROZEN_INPUT_SCHEMAS[name]}
+        for name in FROZEN_TOOL_ORDER
     ]
     return contract_evidence(tools)

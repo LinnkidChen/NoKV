@@ -29,16 +29,15 @@ HOLT_REVISION = "b" * 40
 
 
 def tool_surface(*, include_restore: bool = True) -> list[dict]:
-    tools = [
+    return [
         {
             "name": name,
             "description": f"description for {name}",
-            "inputSchema": copy.deepcopy(schema),
+            "inputSchema": copy.deepcopy(contract.FROZEN_INPUT_SCHEMAS[name]),
         }
-        for name, schema in contract.FROZEN_INPUT_SCHEMAS.items()
+        for name in contract.FROZEN_TOOL_ORDER
         if include_restore or name != contract.RESTORE_TOOL
     ]
-    return sorted(tools, key=lambda tool: tool["name"])
 
 
 class SyncWorkbenchMcpTest(unittest.TestCase):
@@ -163,6 +162,17 @@ class SyncWorkbenchMcpTest(unittest.TestCase):
             self.assertEqual(runtime.sha256_file(command), lock["artifact"]["sha256"])
             self.assertEqual(lock["source"]["holt_git_commit"], HOLT_REVISION)
             self.assertEqual(lock["contract"]["tool_count"], 18)
+            self.assertEqual(
+                lock["contract"]["tool_order"], list(contract.FROZEN_TOOL_ORDER)
+            )
+            self.assertEqual(
+                lock["contract"]["tool_order_sha256"],
+                contract.expected_contract_evidence()["tool_order_sha256"],
+            )
+            self.assertEqual(
+                lock["contract"]["contract_sha256"],
+                contract.expected_contract_evidence()["contract_sha256"],
+            )
             self.assertEqual(lock["launch"]["workbench_root"], "/agents/coordinator/wb")
 
             second = self.run_sync(*self.sync_args(project, source, binary))
@@ -186,6 +196,24 @@ class SyncWorkbenchMcpTest(unittest.TestCase):
 
             self.assertEqual(result[0], 1)
             self.assertIn("missing=['workbench_restore']", result[2])
+            self.assertEqual((agent / "init.json").read_bytes(), init_before)
+            self.assertFalse((agent / "mcp_registry.jsonl").exists())
+            self.assertFalse((agent / sync.LOCK_NAME).exists())
+
+    def test_wrong_tools_list_order_fails_before_agent_configuration(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source = self.make_source(root)
+            project, agent = self.make_project(root)
+            tools = tool_surface()
+            tools[0], tools[1] = tools[1], tools[0]
+            binary = self.make_binary(root, tools)
+            init_before = (agent / "init.json").read_bytes()
+
+            result = self.run_sync(*self.sync_args(project, source, binary))
+
+            self.assertEqual(result[0], 1)
+            self.assertIn("tools/list order differs", result[2])
             self.assertEqual((agent / "init.json").read_bytes(), init_before)
             self.assertFalse((agent / "mcp_registry.jsonl").exists())
             self.assertFalse((agent / sync.LOCK_NAME).exists())
@@ -230,7 +258,7 @@ class SyncWorkbenchMcpTest(unittest.TestCase):
             self.assertIn("missing=['workbench_restore']", rejected[2])
             self.assertEqual({path: path.read_bytes() for path in paths}, before)
 
-    def test_schema_digest_change_requires_explicit_acceptance(self):
+    def test_contract_identity_change_requires_explicit_acceptance(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             source = self.make_source(root)
@@ -240,7 +268,7 @@ class SyncWorkbenchMcpTest(unittest.TestCase):
             self.assertEqual(first[0], 0, first[2])
             lock_path = agent / sync.LOCK_NAME
             old_lock = json.loads(lock_path.read_text(encoding="utf-8"))
-            old_lock["contract"]["tools_schema_sha256"] = "c" * 64
+            old_lock["contract"]["contract_sha256"] = "c" * 64
             lock_path.write_text(
                 json.dumps(old_lock, indent=2, sort_keys=True) + "\n",
                 encoding="utf-8",
@@ -251,7 +279,7 @@ class SyncWorkbenchMcpTest(unittest.TestCase):
             rejected = self.run_sync(*self.sync_args(project, source, binary))
 
             self.assertEqual(rejected[0], 1)
-            new_digest = contract.expected_contract_evidence()["tools_schema_sha256"]
+            new_digest = contract.expected_contract_evidence()["contract_sha256"]
             self.assertIn(f"--accept-contract-sha256 {new_digest}", rejected[2])
             self.assertEqual(lock_path.read_bytes(), lock_before)
             self.assertEqual((agent / "init.json").read_bytes(), init_before)
@@ -263,6 +291,115 @@ class SyncWorkbenchMcpTest(unittest.TestCase):
             )
             self.assertEqual(accepted[0], 0, accepted[2])
             self.assertNotEqual(lock_path.read_bytes(), lock_before)
+
+    def test_order_only_contract_transition_requires_explicit_acceptance(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source = self.make_source(root)
+            project, agent = self.make_project(root)
+            binary = self.make_binary(root, tool_surface())
+            first = self.run_sync(*self.sync_args(project, source, binary))
+            self.assertEqual(first[0], 0, first[2])
+            lock_path = agent / sync.LOCK_NAME
+            old_lock = json.loads(lock_path.read_text(encoding="utf-8"))
+            old_order = list(reversed(old_lock["contract"]["tool_order"]))
+            old_lock["contract"]["tool_order"] = old_order
+            old_lock["contract"]["tool_order_sha256"] = contract.json_sha256(old_order)
+            old_lock["contract"]["contract_sha256"] = contract.json_sha256(
+                {
+                    "inputSchemas": contract.contract_payload(tool_surface()),
+                    "toolOrder": old_order,
+                }
+            )
+            self.assertEqual(
+                old_lock["contract"]["tools_schema_sha256"],
+                contract.expected_contract_evidence()["tools_schema_sha256"],
+            )
+            lock_path.write_text(
+                json.dumps(old_lock, indent=2, sort_keys=True) + "\n",
+                encoding="utf-8",
+            )
+            lock_before = lock_path.read_bytes()
+
+            rejected = self.run_sync(
+                "--project",
+                str(project),
+                "--agent",
+                "coordinator",
+                "--preflight-only",
+            )
+
+            new_digest = contract.expected_contract_evidence()["contract_sha256"]
+            self.assertEqual(rejected[0], 1)
+            self.assertIn("input schemas and/or tools/list order", rejected[2])
+            self.assertIn(f"--accept-contract-sha256 {new_digest}", rejected[2])
+            self.assertEqual(lock_path.read_bytes(), lock_before)
+
+            accepted_preflight = self.run_sync(
+                "--project",
+                str(project),
+                "--agent",
+                "coordinator",
+                "--preflight-only",
+                "--accept-contract-sha256",
+                new_digest,
+            )
+            self.assertEqual(accepted_preflight[0], 0, accepted_preflight[2])
+            self.assertEqual(lock_path.read_bytes(), lock_before)
+
+            accepted = self.run_sync(
+                *self.sync_args(project, source, binary),
+                "--accept-contract-sha256",
+                new_digest,
+            )
+            self.assertEqual(accepted[0], 0, accepted[2])
+            updated_lock = json.loads(lock_path.read_text(encoding="utf-8"))
+            self.assertEqual(
+                updated_lock["contract"]["tool_order"],
+                list(contract.FROZEN_TOOL_ORDER),
+            )
+
+    def test_legacy_schema_only_lock_requires_order_aware_acceptance(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source = self.make_source(root)
+            project, agent = self.make_project(root)
+            binary = self.make_binary(root, tool_surface())
+            first = self.run_sync(*self.sync_args(project, source, binary))
+            self.assertEqual(first[0], 0, first[2])
+            lock_path = agent / sync.LOCK_NAME
+            old_lock = json.loads(lock_path.read_text(encoding="utf-8"))
+            for field in ("tool_order", "tool_order_sha256", "contract_sha256"):
+                del old_lock["contract"][field]
+            lock_path.write_text(
+                json.dumps(old_lock, indent=2, sort_keys=True) + "\n",
+                encoding="utf-8",
+            )
+            lock_before = lock_path.read_bytes()
+            new_digest = contract.expected_contract_evidence()["contract_sha256"]
+
+            rejected = self.run_sync(
+                "--project",
+                str(project),
+                "--agent",
+                "coordinator",
+                "--preflight-only",
+            )
+
+            self.assertEqual(rejected[0], 1)
+            self.assertIn(f"--accept-contract-sha256 {new_digest}", rejected[2])
+            self.assertEqual(lock_path.read_bytes(), lock_before)
+
+            accepted = self.run_sync(
+                *self.sync_args(project, source, binary),
+                "--accept-contract-sha256",
+                new_digest,
+            )
+            self.assertEqual(accepted[0], 0, accepted[2])
+            updated_lock = json.loads(lock_path.read_text(encoding="utf-8"))
+            self.assertEqual(
+                updated_lock["contract"], contract.expected_contract_evidence()
+            )
 
     def test_lock_write_failure_rolls_back_both_lingtai_files(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -555,9 +692,9 @@ class SyncWorkbenchMcpTest(unittest.TestCase):
                 {name: path.read_bytes() for name, path in paths.items()}, before
             )
 
-    def test_contract_digest_ignores_order_and_descriptions(self):
+    def test_contract_evidence_ignores_descriptions_but_rejects_order(self):
         original = tool_surface()
-        changed = copy.deepcopy(list(reversed(original)))
+        changed = copy.deepcopy(original)
         for tool in changed:
             tool["description"] = "new prose"
 
@@ -565,6 +702,10 @@ class SyncWorkbenchMcpTest(unittest.TestCase):
             contract.contract_evidence(original),
             contract.contract_evidence(changed),
         )
+        with self.assertRaisesRegex(
+            contract.WorkbenchContractError, "tools/list order differs"
+        ):
+            contract.contract_evidence(list(reversed(original)))
 
     def test_contract_rejects_duplicate_tools_and_nullable_restore(self):
         duplicate = tool_surface()

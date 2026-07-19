@@ -21,9 +21,9 @@ def frozen_tools(*, schema_key: str = "inputSchema") -> list[dict]:
         {
             "name": name,
             "description": f"description for {name}",
-            schema_key: copy.deepcopy(schema),
+            schema_key: copy.deepcopy(contract.FROZEN_INPUT_SCHEMAS[name]),
         }
-        for name, schema in contract.FROZEN_INPUT_SCHEMAS.items()
+        for name in contract.FROZEN_TOOL_ORDER
     ]
 
 
@@ -47,9 +47,55 @@ def reverse_unordered_arrays(value: object) -> None:
 
 class WorkbenchContractTest(unittest.TestCase):
     def test_frozen_surface_is_the_exact_eighteen_tools(self):
+        tools = frozen_tools()
         self.assertEqual(len(contract.FROZEN_INPUT_SCHEMAS), 18)
         self.assertEqual(set(contract.FROZEN_INPUT_SCHEMAS), contract.WORKBENCH_TOOLS)
-        contract.validate_tool_contract(frozen_tools())
+        contract.validate_tool_contract(tools)
+        contract.validate_tool_order(tools)
+        evidence = contract.contract_evidence(tools)
+        self.assertEqual(evidence["tool_order"], list(contract.FROZEN_TOOL_ORDER))
+        self.assertEqual(
+            evidence["tool_order_sha256"],
+            contract.json_sha256(list(contract.FROZEN_TOOL_ORDER)),
+        )
+        self.assertEqual(
+            evidence["contract_sha256"],
+            contract.json_sha256(
+                {
+                    key: value
+                    for key, value in evidence.items()
+                    if key != "contract_sha256"
+                }
+            ),
+        )
+
+    def test_contract_digest_covers_every_transition_evidence_field(self):
+        evidence = contract.contract_evidence(frozen_tools())
+        for field in evidence:
+            if field == "contract_sha256":
+                continue
+            with self.subTest(field=field):
+                changed = copy.deepcopy(evidence)
+                changed[field] = f"changed-{field}"
+                self.assertNotEqual(
+                    evidence["contract_sha256"],
+                    contract.json_sha256(
+                        {
+                            key: value
+                            for key, value in changed.items()
+                            if key != "contract_sha256"
+                        }
+                    ),
+                )
+
+    def test_contract_evidence_rejects_swapped_tool_order(self):
+        tools = frozen_tools()
+        tools[0], tools[1] = tools[1], tools[0]
+        with self.assertRaisesRegex(
+            contract.WorkbenchContractError,
+            r"^workbench tools/list order differs",
+        ):
+            contract.contract_evidence(tools)
 
     def test_every_tool_schema_is_compared(self):
         for name in sorted(contract.WORKBENCH_TOOLS):

@@ -22,8 +22,8 @@ used to configure the Workbench MCP.
 | `sync_workbench_mcp.py` | Lower-level source build or artifact staging, content-addressed runtime selection, offline/live preflight, per-Agent locking, journaled registry update, and read-only lock verification. |
 | `nokv_runtime.py` | NoKV/Holt/Cargo.lock identity, artifact-bound build-info parsing, SHA-256 verification, and symlink-safe immutable runtime staging. |
 | `managed_nokv_server.py` | Records and verifies the helper-owned server PID, process start identity, listener ownership, binary digest, complete argv, metadata path, and object-store configuration before reuse or termination. |
-| `workbench_contract.py` | Semantic validation and evidence for the exact 18-tool Workbench surface. |
-| `workbench_contract_schema.json` | Checked-in canonical `inputSchema` snapshot owned by `workbench_mcp.rs`. |
+| `workbench_contract.py` | Semantic validation and evidence for the exact ordered 18-tool Workbench surface. |
+| `workbench_contract_schema.json` | Checked-in canonical `inputSchema` and `toolOrder` snapshot owned by `workbench_mcp.rs`. |
 | `generate_nokv_build_info.py` | Produces `nokv.build_info.v1` for a Release or future Brew artifact. |
 | `install_workbench_mcp.py` | Raw idempotent registry primitive. It intentionally performs no binary, owner, capability, or schema gate. |
 | `start_rustfs.sh` | Starts or reuses the dedicated local RustFS container and creates the selected bucket. |
@@ -53,8 +53,8 @@ then owns:
 
 The lock records the binary digest and size, NoKV commit, `Cargo.lock` digest,
 Holt commit, launch arguments, concrete Agent root, and canonical MCP contract
-evidence. A rebuild or package upgrade cannot replace the registered binary in
-place.
+evidence including the exact `tools/list` order. A rebuild or package upgrade
+cannot replace the registered binary in place.
 
 The helper's default process state is below
 `<NoKV checkout>/target/lingtai-workbench`. Metadata is durable product state,
@@ -81,7 +81,7 @@ a persistent location and keep that location stable across updates.
 | `LINGTAI_WORKBENCH_S3_BUCKET` | `nokv-lingtai-workbench` | Object bucket. |
 | `LINGTAI_WORKBENCH_S3_ACCESS_KEY_ID` | `rustfsadmin` | Lower-level RustFS bootstrap credential. `up.sh` rejects a non-default value because custom credentials are not propagated into the LingTai MCP registration. |
 | `LINGTAI_WORKBENCH_S3_SECRET_ACCESS_KEY` | `rustfsadmin` | Lower-level RustFS bootstrap credential. `up.sh` rejects a non-default value because custom credentials are not propagated into the LingTai MCP registration. |
-| `LINGTAI_WORKBENCH_ACCEPT_CONTRACT_SHA256` | unset | Accept exactly one reviewed new canonical schema digest. It is not a Boolean bypass. |
+| `LINGTAI_WORKBENCH_ACCEPT_CONTRACT_SHA256` | unset | Accept exactly one reviewed new canonical contract digest covering schemas and `tools/list` order. It is not a Boolean bypass. |
 | `LINGTAI_WORKBENCH_ALLOW_DIRTY` | `0` | Set to `1` only for an explicitly dirty local maintainer build. |
 
 Local RustFS-specific controls are:
@@ -281,9 +281,11 @@ printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"tools/list"}' | \
     --workbench-root '/agents/coordinator(codex-gpt-5.4)/wb'
 ```
 
-The result must contain exactly 18 tools. Compare `inputSchema` semantically to
-`workbench_contract_schema.json`; descriptions and JSON Schema annotations do
-not affect the contract digest, while missing fields or added restrictions do.
+The result must contain exactly 18 tools in the frozen `toolOrder`. Compare
+`inputSchema` semantically to `workbench_contract_schema.json`; descriptions
+and JSON Schema annotations do not affect the schema component, while missing
+fields, added restrictions, or a different tools/list order change or fail the
+contract.
 
 ### 6. Gated Registration and Read-Only Verification
 
@@ -306,9 +308,9 @@ python3 ./scripts/lingtai-workbench/sync_workbench_mcp.py \
   --check
 ```
 
-When a reviewed contract transition is intentional, pass the exact digest from
-the error as `--accept-contract-sha256 <digest>`. Never add a Boolean force
-flag.
+When a reviewed schema or tools/list-order contract transition is intentional,
+pass the exact digest from the error as `--accept-contract-sha256 <digest>`.
+Never add a Boolean force flag.
 
 ### Raw Registration Repair
 

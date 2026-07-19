@@ -397,21 +397,25 @@ def recover_interrupted_update(agent_dir: Path) -> bool:
 def validate_contract_transition(
     lock_path: Path,
     *,
-    new_digest: str,
+    new_contract: dict[str, Any],
     accepted_digest: str | None,
 ) -> None:
     if not lock_path.exists():
         return
     existing = read_lock(lock_path)
-    old_digest = existing["contract"].get("tools_schema_sha256")
-    if old_digest == new_digest:
+    new_contract_digest = new_contract.get("contract_sha256")
+    if not isinstance(new_contract_digest, str):
+        raise ValueError("new workbench contract lacks contract_sha256")
+    old_contract = existing["contract"]
+    old_contract_digest = old_contract.get("contract_sha256")
+    if old_contract == new_contract:
         return
-    if accepted_digest != new_digest:
+    if accepted_digest != new_contract_digest:
         raise ValueError(
-            "workbench input schemas changed; review the canonical tools/list "
-            "contract and rerun with "
-            f"--accept-contract-sha256 {new_digest} "
-            f"(old={old_digest}, new={new_digest})"
+            "workbench contract changed (input schemas and/or tools/list order); "
+            "review the canonical contract and rerun with "
+            f"--accept-contract-sha256 {new_contract_digest} "
+            f"(old={old_contract_digest}, new={new_contract_digest})"
         )
 
 
@@ -425,10 +429,10 @@ def offline_agent_preflight(
     recovered = recover_interrupted_update(agent_dir)
     installer.read_registry(agent_dir / "mcp_registry.jsonl")
     installer.read_init(agent_dir / "init.json")
-    expected_digest = expected_contract_evidence()["tools_schema_sha256"]
+    expected_contract = expected_contract_evidence()
     validate_contract_transition(
         agent_dir / LOCK_NAME,
-        new_digest=expected_digest,
+        new_contract=expected_contract,
         accepted_digest=accepted_digest,
     )
     return recovered
@@ -613,7 +617,10 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--timeout-seconds", type=float, default=20.0)
     parser.add_argument(
         "--accept-contract-sha256",
-        help="Accept exactly this reviewed canonical input-schema SHA-256.",
+        help=(
+            "Accept exactly this reviewed canonical Workbench contract SHA-256 "
+            "(input schemas and tools/list order)."
+        ),
     )
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument(
@@ -705,8 +712,8 @@ def main(argv: list[str]) -> int:
             print("agent_files_valid: true")
             print(f"interrupted_update_recovered: {str(recovered).lower()}")
             print(
-                "expected_tools_schema_sha256: "
-                f"{expected_contract_evidence()['tools_schema_sha256']}"
+                "expected_contract_sha256: "
+                f"{expected_contract_evidence()['contract_sha256']}"
             )
             return 0
 
@@ -795,13 +802,15 @@ def main(argv: list[str]) -> int:
             evidence = contract_evidence(tools)
             validate_contract_transition(
                 agent_dir / LOCK_NAME,
-                new_digest=evidence["tools_schema_sha256"],
+                new_contract=evidence,
                 accepted_digest=args.accept_contract_sha256,
             )
             print(f"agent_dir: {agent_dir}")
             print(f"binary_sha256: {runtime.sha256}")
             print(f"nokv_revision: {identity.nokv_git_commit}")
             print(f"tools_schema_sha256: {evidence['tools_schema_sha256']}")
+            print(f"tool_order_sha256: {evidence['tool_order_sha256']}")
+            print(f"contract_sha256: {evidence['contract_sha256']}")
             print("live_contract_valid: true")
             return 0
 
@@ -840,7 +849,7 @@ def main(argv: list[str]) -> int:
             lock_path = agent_dir / LOCK_NAME
             validate_contract_transition(
                 lock_path,
-                new_digest=desired_lock["contract"]["tools_schema_sha256"],
+                new_contract=desired_lock["contract"],
                 accepted_digest=args.accept_contract_sha256,
             )
 
@@ -868,6 +877,8 @@ def main(argv: list[str]) -> int:
     print(f"nokv_revision: {identity.nokv_git_commit}")
     print(f"holt_revision: {identity.holt_git_commit}")
     print(f"tools_schema_sha256: {desired_lock['contract']['tools_schema_sha256']}")
+    print(f"tool_order_sha256: {desired_lock['contract']['tool_order_sha256']}")
+    print(f"contract_sha256: {desired_lock['contract']['contract_sha256']}")
     print(f"registry_changed: {str(result.registry_changed).lower()}")
     print(f"init_changed: {str(result.init_changed).lower()}")
     print(f"lock_changed: {str(lock_changed).lower()}")

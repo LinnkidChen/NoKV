@@ -155,10 +155,10 @@ pub fn normalize_workbench_root(raw: &str) -> Result<String, String> {
     Ok(normalized)
 }
 
-/// Build the workbench surface after capability probing. Restore is omitted,
-/// rather than advertised optimistically, unless the caller confirms the
-/// durable v1 contract for every metadata owner that can own a target.
-pub fn tool_definitions_for_capabilities(restore_to_fork_v1: bool) -> Vec<AgentToolDefinition> {
+/// Return the complete static Workbench catalog. This is the single source of
+/// ownership for the Workbench provider even when a capability probe later
+/// hides `workbench_restore` from one `tools/list` response.
+pub fn complete_tool_definitions() -> Vec<AgentToolDefinition> {
     let mut tools = vec![
         AgentToolDefinition {
             name: "workbench_create",
@@ -498,8 +498,7 @@ pub fn tool_definitions_for_capabilities(restore_to_fork_v1: bool) -> Vec<AgentT
             }),
         },
     ];
-    if restore_to_fork_v1 {
-        tools.push(AgentToolDefinition {
+    tools.push(AgentToolDefinition {
             name: "workbench_restore",
             description:
                 "Restore a live checkpoint into a new workbench using a durable COW fork. The source remains unchanged, the destination must be absent, and exact retries are idempotent.",
@@ -513,7 +512,17 @@ pub fn tool_definitions_for_capabilities(restore_to_fork_v1: bool) -> Vec<AgentT
                 },
                 "additionalProperties": false
             }),
-        });
+    });
+    tools
+}
+
+/// Build the workbench surface after capability probing. Restore is omitted,
+/// rather than advertised optimistically, unless the caller confirms the
+/// durable v1 contract for every metadata owner that can own a target.
+pub fn tool_definitions_for_capabilities(restore_to_fork_v1: bool) -> Vec<AgentToolDefinition> {
+    let mut tools = complete_tool_definitions();
+    if !restore_to_fork_v1 {
+        tools.retain(|tool| tool.name != "workbench_restore");
     }
     tools
 }
@@ -4607,8 +4616,19 @@ mod tests {
             .get("inputSchemas")
             .and_then(Value::as_object)
             .expect("frozen workbench contract must contain inputSchemas");
+        let frozen_order = snapshot
+            .get("toolOrder")
+            .and_then(Value::as_array)
+            .expect("frozen workbench contract must contain toolOrder")
+            .iter()
+            .map(|name| {
+                name.as_str()
+                    .expect("frozen toolOrder name must be a string")
+            })
+            .collect::<Vec<_>>();
         let tools = tool_definitions_for_capabilities(true);
         let rust_names = tools.iter().map(|tool| tool.name).collect::<BTreeSet<_>>();
+        let rust_order = tools.iter().map(|tool| tool.name).collect::<Vec<_>>();
         let frozen_names = frozen.keys().map(String::as_str).collect::<BTreeSet<_>>();
 
         assert_eq!(
@@ -4624,6 +4644,10 @@ mod tests {
         assert_eq!(
             rust_names, frozen_names,
             "frozen tool names must match Rust"
+        );
+        assert_eq!(
+            rust_order, frozen_order,
+            "frozen tool order must match Rust"
         );
 
         for tool in tools {

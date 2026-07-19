@@ -1,5 +1,7 @@
 //! Minimal NoKV command line interface.
 
+#[path = "nokv/mcp_runtime.rs"]
+mod mcp_runtime;
 #[path = "nokv/workbench_mcp.rs"]
 mod workbench_mcp;
 
@@ -191,6 +193,15 @@ struct McpCliOptions {
 enum McpProfile {
     Agent,
     Workbench,
+    /// Experimental composition entry point for LingTai integration tests.
+    /// Keep it out of public help and supported deployment examples.
+    Lingtai,
+}
+
+impl McpProfile {
+    fn uses_workbench_composition(self) -> bool {
+        matches!(self, Self::Workbench | Self::Lingtai)
+    }
 }
 
 #[derive(Debug)]
@@ -291,10 +302,22 @@ type Client = NoKvFsClient<ConfiguredObjectStore>;
 
 fn main() {
     if let Err(err) = run(env::args().skip(1).collect()) {
-        eprintln!("error: {err}");
-        eprintln!();
-        print_help(&mut io::stderr()).ok();
-        std::process::exit(2);
+        let stderr = io::stderr();
+        let mut stderr = stderr.lock();
+        let exit_status = report_cli_result(Err(err), &mut stderr);
+        std::process::exit(exit_status);
+    }
+}
+
+fn report_cli_result(result: Result<(), CliError>, stderr: &mut impl Write) -> i32 {
+    match result {
+        Ok(()) => 0,
+        Err(err) => {
+            let _ = writeln!(stderr, "error: {err}");
+            let _ = writeln!(stderr);
+            print_help(stderr).ok();
+            2
+        }
     }
 }
 
@@ -521,8 +544,7 @@ fn run(args: Vec<String>) -> Result<(), CliError> {
             nokv_server::run(server_options_from_config(config)).map_err(from_io)?;
         }
         Command::Mcp(options) => {
-            let client = open_client(&config)?;
-            run_mcp(client, options, config.uid, config.gid).map_err(from_io)?;
+            run_mcp(&config, options, config.uid, config.gid)?;
         }
         Command::Gc { limit } => {
             let body = control_get(&config, &format!("/gc?limit={limit}"))?;
@@ -1179,6 +1201,7 @@ fn parse_archive_prefix(raw: &str, option: &str) -> Result<String, CliError> {
 
 fn parse_mcp_args(args: &[String]) -> Result<McpCliOptions, CliError> {
     let mut options = McpCliOptions::default();
+    let mut saw_workbench_max_bytes = false;
     let mut index = 1;
     while index < args.len() {
         match args[index].as_str() {
@@ -1201,6 +1224,7 @@ fn parse_mcp_args(args: &[String]) -> Result<McpCliOptions, CliError> {
             }
             "--workbench-max-bytes" => {
                 index += 1;
+                saw_workbench_max_bytes = true;
                 options.workbench_max_bytes = parse_usize(
                     value(args, index, "--workbench-max-bytes")?,
                     "workbench-max-bytes",
@@ -1210,12 +1234,11 @@ fn parse_mcp_args(args: &[String]) -> Result<McpCliOptions, CliError> {
         }
         index += 1;
     }
-    if options.profile == McpProfile::Workbench && options.workbench_root.is_none() {
+    if options.profile.uses_workbench_composition() && options.workbench_root.is_none() {
         return Err(CliError::MissingArgument("workbench root"));
     }
     if options.profile == McpProfile::Agent
-        && (options.workbench_root.is_some()
-            || options.workbench_max_bytes != workbench_mcp::DEFAULT_WORKBENCH_MAX_BYTES)
+        && (options.workbench_root.is_some() || saw_workbench_max_bytes)
     {
         return Err(CliError::InvalidOption {
             field: "mcp profile",
@@ -1229,6 +1252,7 @@ fn parse_mcp_profile(raw: &str) -> Result<McpProfile, CliError> {
     match raw {
         "agent" => Ok(McpProfile::Agent),
         "workbench" => Ok(McpProfile::Workbench),
+        "lingtai" => Ok(McpProfile::Lingtai),
         _ => Err(CliError::InvalidOption {
             field: "profile",
             value: raw.to_owned(),
@@ -1826,10 +1850,87 @@ fn from_client(err: impl Error) -> CliError {
 fn from_object(err: impl Error) -> CliError {
     CliError::Client(err.to_string())
 }
-fn run_mcp(client: Client, options: McpCliOptions, uid: u32, gid: u32) -> std::io::Result<()> {
+fn run_mcp(config: &Config, options: McpCliOptions, uid: u32, gid: u32) -> Result<(), CliError> {
     let stdin = std::io::stdin();
     let stdout = std::io::stdout();
-    run_mcp_stream_with_options(client, options, uid, gid, stdin.lock(), stdout.lock())
+    run_mcp_command_with_client_opener_and_runtime_builder(
+        || open_client(config),
+        || mcp_runtime_for_options(&options, uid, gid),
+        stdin.lock(),
+        stdout.lock(),
+    )
+}
+
+/// Build the static runtime before opening the one client used by an MCP
+/// command. That makes duplicate catalog ownership a deterministic startup
+/// failure with no client activity or JSON-RPC serving.
+fn run_mcp_command_with_client_opener_and_runtime_builder<O>(
+    open_client: impl FnOnce() -> Result<NoKvFsClient<O>, CliError>,
+    build_runtime: impl FnOnce() -> std::io::Result<mcp_runtime::McpRuntime<O>>,
+    reader: impl std::io::BufRead,
+    writer: impl std::io::Write,
+) -> Result<(), CliError>
+where
+    O: nokv_object::ObjectStore + Send + Sync + 'static,
+{
+    let runtime = build_runtime().map_err(from_io)?;
+    let client = open_client()?;
+    run_mcp_stream_with_runtime(client, runtime, reader, writer).map_err(from_io)
+}
+
+fn mcp_runtime_for_options<O>(
+    options: &McpCliOptions,
+    uid: u32,
+    gid: u32,
+) -> std::io::Result<mcp_runtime::McpRuntime<O>>
+where
+    O: nokv_object::ObjectStore + Send + Sync + 'static,
+{
+    let providers: Vec<Box<dyn mcp_runtime::McpToolProvider<O>>> = match options.profile {
+        McpProfile::Agent => vec![Box::new(mcp_runtime::AgentMcpProvider)],
+        McpProfile::Workbench | McpProfile::Lingtai => {
+            workbench_provider_composition(options, uid, gid)?
+        }
+    };
+    mcp_runtime_from_providers(providers)
+}
+
+fn workbench_provider_composition<O>(
+    options: &McpCliOptions,
+    uid: u32,
+    gid: u32,
+) -> std::io::Result<Vec<Box<dyn mcp_runtime::McpToolProvider<O>>>>
+where
+    O: nokv_object::ObjectStore + Send + Sync + 'static,
+{
+    let root = options.workbench_root.clone().ok_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "workbench MCP profile requires a root",
+        )
+    })?;
+    Ok(vec![Box::new(mcp_runtime::WorkbenchMcpProvider::new(
+        workbench_mcp::WorkbenchMcpOptions {
+            root,
+            max_bytes: options.workbench_max_bytes,
+            uid,
+            gid,
+        },
+    ))])
+}
+
+fn mcp_runtime_from_providers<O>(
+    providers: Vec<Box<dyn mcp_runtime::McpToolProvider<O>>>,
+) -> std::io::Result<mcp_runtime::McpRuntime<O>>
+where
+    O: nokv_object::ObjectStore + Send + Sync + 'static,
+{
+    mcp_runtime::McpRuntime::new(providers).map_err(|err| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            format!("MCP runtime startup failed: {err}"),
+        )
+    })
 }
 
 #[cfg(test)]
@@ -1851,11 +1952,25 @@ where
     )
 }
 
+#[cfg(test)]
 fn run_mcp_stream_with_options<O>(
     client: nokv_client::NoKvFsClient<O>,
     options: McpCliOptions,
     uid: u32,
     gid: u32,
+    reader: impl std::io::BufRead,
+    writer: impl std::io::Write,
+) -> std::io::Result<()>
+where
+    O: nokv_object::ObjectStore + Send + Sync + 'static,
+{
+    let runtime = mcp_runtime_for_options::<O>(&options, uid, gid)?;
+    run_mcp_stream_with_runtime(client, runtime, reader, writer)
+}
+
+fn run_mcp_stream_with_runtime<O>(
+    client: nokv_client::NoKvFsClient<O>,
+    runtime: mcp_runtime::McpRuntime<O>,
     mut reader: impl std::io::BufRead,
     mut writer: impl std::io::Write,
 ) -> std::io::Result<()>
@@ -1895,19 +2010,6 @@ where
     fn err_response(id: Option<serde_json::Value>, code: i64, message: &str) -> serde_json::Value {
         json!({ "jsonrpc": "2.0", "id": id, "error": { "code": code, "message": message } })
     }
-
-    let workbench_options = match options.profile {
-        McpProfile::Agent => None,
-        McpProfile::Workbench => Some(workbench_mcp::WorkbenchMcpOptions {
-            root: options
-                .workbench_root
-                .clone()
-                .expect("workbench profile requires a root"),
-            max_bytes: options.workbench_max_bytes,
-            uid,
-            gid,
-        }),
-    };
 
     let mut line = String::new();
     while reader.read_line(&mut line)? > 0 {
@@ -1980,48 +2082,25 @@ where
                                             }))
                                         }
                                         "initialized" | "ping" => Ok(json!({})),
-                                        "tools/list" => {
-                                            let definitions = match options.profile {
-                                                McpProfile::Agent => {
-                                                    nokv_agent::agent_tool_definitions()
-                                                }
-                                                McpProfile::Workbench => {
-                                                    // tools/list has no destination arguments, so
-                                                    // fleet advertisement must cover every owner
-                                                    // that can win below the configured root. Any
-                                                    // enumeration or probe failure is unsupported.
-                                                    let restore_to_fork_v1 = workbench_options
-                                                        .as_ref()
-                                                        .and_then(|workbench| {
-                                                            client
-                                                                .metadata()
-                                                                .metadata_capabilities_for_subtree_owners(
-                                                                    &workbench.root,
-                                                                )
-                                                                .ok()
+                                        "tools/list" => match runtime.tool_definitions(&client) {
+                                            Ok(definitions) => {
+                                                let tools: Vec<serde_json::Value> = definitions
+                                                    .into_iter()
+                                                    .map(|t| {
+                                                        json!({
+                                                            "name": t.name,
+                                                            "description": t.description,
+                                                            "inputSchema": t.parameters,
                                                         })
-                                                        .is_some_and(|owners| {
-                                                            owners.iter().all(|capabilities| {
-                                                                capabilities.restore_to_fork_v1
-                                                            })
-                                                        });
-                                                    workbench_mcp::tool_definitions_for_capabilities(
-                                                        restore_to_fork_v1,
-                                                    )
-                                                }
-                                            };
-                                            let tools: Vec<serde_json::Value> = definitions
-                                                .into_iter()
-                                                .map(|t| {
-                                                    json!({
-                                                        "name": t.name,
-                                                        "description": t.description,
-                                                        "inputSchema": t.parameters,
                                                     })
-                                                })
-                                                .collect();
-                                            Ok(json!({ "tools": tools }))
-                                        }
+                                                    .collect();
+                                                Ok(json!({ "tools": tools }))
+                                            }
+                                            Err(err) => Err((
+                                                -32603_i64,
+                                                format!("MCP runtime error: {err}"),
+                                            )),
+                                        },
                                         "tools/call" => {
                                             let params = req.params.clone().unwrap_or(json!({}));
                                             match serde_json::from_value::<CallToolParams>(params) {
@@ -2031,32 +2110,8 @@ where
                                                 )),
                                                 Ok(call) => {
                                                     let args = call.arguments.unwrap_or(json!({}));
-                                                    let tool_result = match options.profile {
-                                                        McpProfile::Agent => {
-                                                            nokv_agent::execute_agent_tool(
-                                                                &client, &call.name, &args,
-                                                            )
-                                                            .map_err(|err| {
-                                                                json!({
-                                                                    "code": "AgentToolError",
-                                                                    "message": err.to_string(),
-                                                                    "retryable": false,
-                                                                    "details": {},
-                                                                })
-                                                            })
-                                                        }
-                                                        McpProfile::Workbench => {
-                                                            workbench_mcp::execute_tool(
-                                                                &client,
-                                                                workbench_options
-                                                                    .as_ref()
-                                                                    .expect("workbench options"),
-                                                                &call.name,
-                                                                &args,
-                                                            )
-                                                            .map_err(|err| err.as_value())
-                                                        }
-                                                    };
+                                                    let tool_result = runtime
+                                                        .execute_tool(&client, &call.name, &args);
                                                     match tool_result {
                                                         Ok(val) => Ok(json!({
                                                             "content": [{ "type": "text", "text": serde_json::to_string_pretty(&val).unwrap_or_default() }],
@@ -2238,7 +2293,7 @@ impl Error for CliError {}
 mod tests {
     use super::*;
     use std::net::TcpListener;
-    use std::sync::Arc;
+    use std::sync::{Arc, Mutex};
     use std::thread;
 
     use nokv_client::NoKvFsClient;
@@ -2248,6 +2303,75 @@ mod tests {
 
     fn s(value: &str) -> String {
         value.to_owned()
+    }
+
+    struct FakeMcpProvider {
+        provider_name: &'static str,
+        complete: Vec<nokv_agent::AgentToolDefinition>,
+        advertised: Arc<Mutex<Vec<&'static str>>>,
+        result: serde_json::Value,
+        observed_client_addresses: Arc<Mutex<Vec<usize>>>,
+    }
+
+    impl mcp_runtime::McpToolProvider<MemoryObjectStore> for FakeMcpProvider {
+        fn name(&self) -> &'static str {
+            self.provider_name
+        }
+
+        fn complete_tool_definitions(&self) -> Vec<nokv_agent::AgentToolDefinition> {
+            self.complete.clone()
+        }
+
+        fn advertised_tool_names(
+            &self,
+            client: &NoKvFsClient<MemoryObjectStore>,
+        ) -> Vec<&'static str> {
+            self.observed_client_addresses
+                .lock()
+                .unwrap()
+                .push(client as *const NoKvFsClient<MemoryObjectStore> as usize);
+            self.advertised.lock().unwrap().clone()
+        }
+
+        fn execute_tool(
+            &self,
+            client: &NoKvFsClient<MemoryObjectStore>,
+            _name: &str,
+            _args: &serde_json::Value,
+        ) -> Result<serde_json::Value, serde_json::Value> {
+            self.observed_client_addresses
+                .lock()
+                .unwrap()
+                .push(client as *const NoKvFsClient<MemoryObjectStore> as usize);
+            Ok(self.result.clone())
+        }
+    }
+
+    fn fake_tool(name: &'static str) -> nokv_agent::AgentToolDefinition {
+        nokv_agent::AgentToolDefinition {
+            name,
+            description: "fake MCP tool",
+            parameters: serde_json::json!({"type": "object"}),
+        }
+    }
+
+    fn fake_mcp_provider(
+        provider_name: &'static str,
+        complete: Vec<nokv_agent::AgentToolDefinition>,
+        advertised: Arc<Mutex<Vec<&'static str>>>,
+        observed_client_addresses: Arc<Mutex<Vec<usize>>>,
+    ) -> FakeMcpProvider {
+        FakeMcpProvider {
+            provider_name,
+            complete,
+            advertised,
+            result: serde_json::json!({"provider": provider_name}),
+            observed_client_addresses,
+        }
+    }
+
+    fn inert_mcp_client() -> NoKvFsClient<MemoryObjectStore> {
+        NoKvFsClient::connect("127.0.0.1:1".parse().unwrap(), MemoryObjectStore::new())
     }
 
     fn fake_s3_options() -> S3ObjectStoreOptions {
@@ -3164,12 +3288,205 @@ mod tests {
         ));
     }
 
+    #[test]
+    fn lingtai_profile_is_hidden_and_validates_like_workbench() {
+        let command = parse(vec![
+            s("mcp"),
+            s("--profile"),
+            s("lingtai"),
+            s("--workbench-root"),
+            s("/workbenches/"),
+            s("--workbench-max-bytes"),
+            s("1024"),
+        ])
+        .unwrap()
+        .1;
+        assert_eq!(
+            command,
+            Command::Mcp(McpCliOptions {
+                profile: McpProfile::Lingtai,
+                workbench_root: Some(s("/workbenches")),
+                workbench_max_bytes: 1024,
+            })
+        );
+        assert!(matches!(
+            parse(vec![s("mcp"), s("--profile"), s("lingtai")]),
+            Err(CliError::MissingArgument("workbench root"))
+        ));
+        assert!(matches!(
+            parse(vec![
+                s("mcp"),
+                s("--profile"),
+                s("lingtai"),
+                s("--workbench-root"),
+                s("/")
+            ]),
+            Err(CliError::InvalidOption {
+                field: "workbench-root",
+                ..
+            })
+        ));
+        assert_eq!(
+            parse(vec![s("mcp"), s("--workbench-root"), s("/workbenches")])
+                .unwrap_err()
+                .to_string(),
+            "invalid mcp profile option workbench options require --profile workbench"
+        );
+        assert_eq!(
+            parse(vec![
+                s("mcp"),
+                s("--workbench-max-bytes"),
+                workbench_mcp::DEFAULT_WORKBENCH_MAX_BYTES.to_string(),
+            ])
+            .unwrap_err()
+            .to_string(),
+            "invalid mcp profile option workbench options require --profile workbench"
+        );
+
+        let mut help = Vec::new();
+        print_help(&mut help).unwrap();
+        let help = String::from_utf8(help).unwrap();
+        assert!(help.contains("mcp [--profile agent|workbench]"));
+        assert!(!help.to_ascii_lowercase().contains("lingtai"));
+    }
+
+    #[test]
+    fn lingtai_profile_runtime_rejects_missing_root_without_serving() {
+        let err = match mcp_runtime_for_options::<MemoryObjectStore>(
+            &McpCliOptions {
+                profile: McpProfile::Lingtai,
+                workbench_root: None,
+                workbench_max_bytes: workbench_mcp::DEFAULT_WORKBENCH_MAX_BYTES,
+            },
+            DEFAULT_UID,
+            DEFAULT_GID,
+        ) {
+            Ok(_) => panic!("a LingTai profile without a root must not construct a runtime"),
+            Err(err) => err,
+        };
+        assert_eq!(err.kind(), std::io::ErrorKind::InvalidInput);
+        assert_eq!(err.to_string(), "workbench MCP profile requires a root");
+    }
+
     fn workbench_mcp_options() -> McpCliOptions {
         McpCliOptions {
             profile: McpProfile::Workbench,
             workbench_root: Some(s("/workbenches")),
             workbench_max_bytes: workbench_mcp::DEFAULT_WORKBENCH_MAX_BYTES,
         }
+    }
+
+    fn lingtai_mcp_options() -> McpCliOptions {
+        McpCliOptions {
+            profile: McpProfile::Lingtai,
+            workbench_root: Some(s("/workbenches")),
+            workbench_max_bytes: workbench_mcp::DEFAULT_WORKBENCH_MAX_BYTES,
+        }
+    }
+
+    #[test]
+    fn lingtai_profile_parity_covers_the_shared_workbench_surface() {
+        let session = SharedWorkbenchMcpSession::acquire();
+        let workbench_options = workbench_mcp_options();
+        let lingtai_options = lingtai_mcp_options();
+        let workbench_runtime = mcp_runtime_for_options::<LocalObjectStore>(
+            &workbench_options,
+            DEFAULT_UID,
+            DEFAULT_GID,
+        )
+        .unwrap();
+        let lingtai_runtime =
+            mcp_runtime_for_options::<LocalObjectStore>(&lingtai_options, DEFAULT_UID, DEFAULT_GID)
+                .unwrap();
+        let client = session.direct_client();
+
+        assert_eq!(workbench_runtime.provider_names(), vec!["workbench"]);
+        assert_eq!(lingtai_runtime.provider_names(), vec!["workbench"]);
+        assert_eq!(
+            workbench_runtime.tool_definitions(&client).unwrap(),
+            lingtai_runtime.tool_definitions(&client).unwrap(),
+            "the temporary alias must preserve names, descriptions, schemas, and order"
+        );
+
+        let success_args = serde_json::json!({});
+        assert_eq!(
+            workbench_runtime
+                .execute_tool(&client, "workbench_find", &success_args)
+                .unwrap(),
+            lingtai_runtime
+                .execute_tool(&client, "workbench_find", &success_args)
+                .unwrap()
+        );
+
+        let invalid_read_args = serde_json::json!({
+            "id": "profile-parity",
+            "section": "not-a-section",
+            "path": "result.txt",
+        });
+        let workbench_error = workbench_runtime
+            .execute_tool(&client, "workbench_read", &invalid_read_args)
+            .expect_err("invalid workbench read must retain its structured error");
+        let lingtai_error = lingtai_runtime
+            .execute_tool(&client, "workbench_read", &invalid_read_args)
+            .expect_err("invalid workbench read must retain its structured error");
+        assert_eq!(workbench_error, lingtai_error);
+        assert_eq!(workbench_error["status"], "error");
+
+        // Once SharedWorkspaceProvider is added only to the LingTai profile,
+        // narrow this assertion to the common Workbench subset and keep the
+        // shared-runtime invariants above; do not preserve whole-profile
+        // equality forever.
+    }
+
+    #[test]
+    fn lingtai_profile_parity_preserves_dynamic_restore_advertisement() {
+        let fallback_owner = spawn_test_server();
+        let control: Arc<dyn ControlStore> = Arc::new(InMemoryControlStore::new());
+        register_test_fleet_shard(control.as_ref(), "/", 0, &fallback_owner.to_string());
+        control
+            .register_shard(
+                ShardId::new("mount-1:/workbenches/special/deep"),
+                "/workbenches/special/deep".to_owned(),
+                1,
+            )
+            .unwrap();
+
+        let object_dir = tempdir().unwrap();
+        let object_root = object_dir.path().join("objects");
+        let workbench_client = NoKvFsClient::connect_fleet(
+            control.clone(),
+            MountId::new(1).unwrap(),
+            LocalObjectStore::new(LocalObjectStoreOptions::new(object_root.clone())).unwrap(),
+        )
+        .unwrap();
+        let lingtai_client = NoKvFsClient::connect_fleet(
+            control,
+            MountId::new(1).unwrap(),
+            LocalObjectStore::new(LocalObjectStoreOptions::new(object_root)).unwrap(),
+        )
+        .unwrap();
+        let workbench_runtime = mcp_runtime_for_options::<LocalObjectStore>(
+            &workbench_mcp_options(),
+            DEFAULT_UID,
+            DEFAULT_GID,
+        )
+        .unwrap();
+        let lingtai_runtime = mcp_runtime_for_options::<LocalObjectStore>(
+            &lingtai_mcp_options(),
+            DEFAULT_UID,
+            DEFAULT_GID,
+        )
+        .unwrap();
+
+        let workbench_tools = workbench_runtime
+            .tool_definitions(&workbench_client)
+            .unwrap();
+        let lingtai_tools = lingtai_runtime.tool_definitions(&lingtai_client).unwrap();
+        assert_eq!(workbench_tools, lingtai_tools);
+        assert_eq!(workbench_tools.len(), 17);
+        assert!(workbench_tools
+            .iter()
+            .all(|tool| tool.name != "workbench_restore"));
     }
 
     fn run_workbench_mcp_requests(requests: Vec<serde_json::Value>) -> Vec<serde_json::Value> {
@@ -3349,6 +3666,258 @@ mod tests {
     }
 
     #[test]
+    fn mcp_runtime_orders_provider_catalogs_reuses_one_client_and_routes_hidden_tools() {
+        let observed_client_addresses = Arc::new(Mutex::new(Vec::new()));
+        let first_advertised = Arc::new(Mutex::new(vec!["alpha"]));
+        let second_advertised = Arc::new(Mutex::new(vec!["omega"]));
+        let runtime = mcp_runtime::McpRuntime::<MemoryObjectStore>::new(vec![
+            Box::new(fake_mcp_provider(
+                "first",
+                vec![fake_tool("alpha"), fake_tool("beta")],
+                first_advertised.clone(),
+                observed_client_addresses.clone(),
+            )),
+            Box::new(fake_mcp_provider(
+                "second",
+                vec![fake_tool("omega")],
+                second_advertised,
+                observed_client_addresses.clone(),
+            )),
+        ])
+        .unwrap();
+        let client = inert_mcp_client();
+
+        let first_list = runtime.tool_definitions(&client).unwrap();
+        assert_eq!(
+            first_list
+                .iter()
+                .map(|definition| definition.name)
+                .collect::<Vec<_>>(),
+            vec!["alpha", "omega"]
+        );
+
+        // `beta` is currently hidden but stays statically owned by `first`.
+        assert_eq!(
+            runtime
+                .execute_tool(&client, "beta", &serde_json::json!({}))
+                .unwrap()["provider"],
+            "first"
+        );
+
+        *first_advertised.lock().unwrap() = vec!["beta", "alpha"];
+        let second_list = runtime.tool_definitions(&client).unwrap();
+        assert_eq!(
+            second_list
+                .iter()
+                .map(|definition| definition.name)
+                .collect::<Vec<_>>(),
+            vec!["alpha", "beta", "omega"]
+        );
+
+        let expected = &client as *const NoKvFsClient<MemoryObjectStore> as usize;
+        let observed = observed_client_addresses.lock().unwrap();
+        assert_eq!(observed.len(), 5);
+        assert!(observed.iter().all(|address| *address == expected));
+    }
+
+    #[test]
+    fn mcp_command_opens_one_client_and_reuses_it_for_all_providers() {
+        let opened = Arc::new(Mutex::new(0_usize));
+        let observed_client_addresses = Arc::new(Mutex::new(Vec::new()));
+        let first_advertised = Arc::new(Mutex::new(vec!["alpha"]));
+        let second_advertised = Arc::new(Mutex::new(vec!["omega"]));
+        let opened_for_command = opened.clone();
+        let observed_for_runtime = observed_client_addresses.clone();
+        let request = std::io::Cursor::new(
+            r#"{"jsonrpc":"2.0","id":1,"method":"tools/list"}"#.to_owned() + "\n",
+        );
+        let mut writer = Vec::new();
+
+        run_mcp_command_with_client_opener_and_runtime_builder(
+            move || {
+                *opened_for_command.lock().unwrap() += 1;
+                Ok(inert_mcp_client())
+            },
+            move || {
+                mcp_runtime_from_providers(vec![
+                    Box::new(fake_mcp_provider(
+                        "first",
+                        vec![fake_tool("alpha")],
+                        first_advertised,
+                        observed_for_runtime.clone(),
+                    )),
+                    Box::new(fake_mcp_provider(
+                        "second",
+                        vec![fake_tool("omega")],
+                        second_advertised,
+                        observed_for_runtime,
+                    )),
+                ])
+            },
+            request,
+            &mut writer,
+        )
+        .unwrap();
+
+        assert_eq!(*opened.lock().unwrap(), 1);
+        let observed = observed_client_addresses.lock().unwrap();
+        assert_eq!(observed.len(), 2);
+        assert_eq!(observed[0], observed[1]);
+        drop(observed);
+
+        let response: serde_json::Value = serde_json::from_slice(&writer).unwrap();
+        let names = response["result"]["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|tool| tool["name"].as_str().unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(names, vec!["alpha", "omega"]);
+    }
+
+    #[test]
+    fn mcp_command_rejects_duplicate_catalog_before_opening_or_serving() {
+        let opened = Arc::new(Mutex::new(0_usize));
+        let observed_client_addresses = Arc::new(Mutex::new(Vec::new()));
+        let first_advertised = Arc::new(Mutex::new(vec!["duplicate"]));
+        let second_advertised = Arc::new(Mutex::new(vec!["duplicate"]));
+        let opened_for_command = opened.clone();
+        let observed_for_runtime = observed_client_addresses.clone();
+        let request = std::io::Cursor::new(
+            r#"{"jsonrpc":"2.0","id":1,"method":"tools/list"}"#.to_owned() + "\n",
+        );
+        let mut writer = Vec::new();
+
+        let err = run_mcp_command_with_client_opener_and_runtime_builder(
+            move || {
+                *opened_for_command.lock().unwrap() += 1;
+                Ok(inert_mcp_client())
+            },
+            move || {
+                mcp_runtime_from_providers(vec![
+                    Box::new(fake_mcp_provider(
+                        "first",
+                        vec![fake_tool("duplicate")],
+                        first_advertised,
+                        observed_for_runtime.clone(),
+                    )),
+                    Box::new(fake_mcp_provider(
+                        "second",
+                        vec![fake_tool("duplicate")],
+                        second_advertised,
+                        observed_for_runtime,
+                    )),
+                ])
+            },
+            request,
+            &mut writer,
+        )
+        .unwrap_err();
+
+        assert_eq!(*opened.lock().unwrap(), 0);
+        assert!(observed_client_addresses.lock().unwrap().is_empty());
+        assert!(writer.is_empty());
+        assert_eq!(
+            err.to_string(),
+            "io error: MCP runtime startup failed: duplicate MCP tool ownership for duplicate: first then second"
+        );
+
+        let mut stderr = Vec::new();
+        assert_eq!(report_cli_result(Err(err), &mut stderr), 2);
+        let stderr = String::from_utf8(stderr).unwrap();
+        assert_eq!(
+            stderr.lines().next(),
+            Some(
+                "error: io error: MCP runtime startup failed: duplicate MCP tool ownership for duplicate: first then second"
+            )
+        );
+    }
+
+    #[test]
+    fn mcp_runtime_rejects_duplicate_static_ownership_before_serving() {
+        let observed_client_addresses = Arc::new(Mutex::new(Vec::new()));
+        let first_advertised = Arc::new(Mutex::new(vec!["duplicate"]));
+        let second_advertised = Arc::new(Mutex::new(vec!["duplicate"]));
+        let err = match mcp_runtime::McpRuntime::<MemoryObjectStore>::new(vec![
+            Box::new(fake_mcp_provider(
+                "first",
+                vec![fake_tool("duplicate")],
+                first_advertised,
+                observed_client_addresses.clone(),
+            )),
+            Box::new(fake_mcp_provider(
+                "second",
+                vec![fake_tool("duplicate")],
+                second_advertised,
+                observed_client_addresses,
+            )),
+        ]) {
+            Ok(_) => panic!("duplicate ownership must fail before serving"),
+            Err(err) => err,
+        };
+        assert_eq!(
+            err,
+            mcp_runtime::McpRuntimeError::DuplicateTool {
+                tool: "duplicate",
+                first_provider: "first",
+                second_provider: "second",
+            }
+        );
+        assert_eq!(
+            err.to_string(),
+            "duplicate MCP tool ownership for duplicate: first then second"
+        );
+    }
+
+    #[test]
+    fn mcp_runtime_rejects_duplicate_names_within_one_provider() {
+        let observed_client_addresses = Arc::new(Mutex::new(Vec::new()));
+        let advertised = Arc::new(Mutex::new(vec!["duplicate"]));
+        let err = match mcp_runtime::McpRuntime::<MemoryObjectStore>::new(vec![Box::new(
+            fake_mcp_provider(
+                "first",
+                vec![fake_tool("duplicate"), fake_tool("duplicate")],
+                advertised,
+                observed_client_addresses,
+            ),
+        )]) {
+            Ok(_) => panic!("duplicate ownership must fail before serving"),
+            Err(err) => err,
+        };
+        assert_eq!(
+            err,
+            mcp_runtime::McpRuntimeError::DuplicateTool {
+                tool: "duplicate",
+                first_provider: "first",
+                second_provider: "first",
+            }
+        );
+    }
+
+    #[test]
+    fn mcp_runtime_rejects_advertisement_outside_its_static_catalog() {
+        let observed_client_addresses = Arc::new(Mutex::new(Vec::new()));
+        let advertised = Arc::new(Mutex::new(vec!["not-owned"]));
+        let runtime =
+            mcp_runtime::McpRuntime::<MemoryObjectStore>::new(vec![Box::new(fake_mcp_provider(
+                "first",
+                vec![fake_tool("owned")],
+                advertised,
+                observed_client_addresses,
+            ))])
+            .unwrap();
+        let client = inert_mcp_client();
+        assert_eq!(
+            runtime.tool_definitions(&client).unwrap_err(),
+            mcp_runtime::McpRuntimeError::InvalidAdvertisement {
+                tool: "not-owned",
+                provider: "first",
+                owner: "no provider",
+            }
+        );
+    }
+
+    #[test]
     fn test_mcp_server_stdio() {
         let store = MemoryObjectStore::new();
         let client = NoKvFsClient::connect(spawn_test_server(), store.clone());
@@ -3499,6 +4068,105 @@ mod tests {
             .iter()
             .any(|tool| tool["name"] == "workbench_snapshot_retire"));
         assert!(tools.iter().all(|tool| tool["name"] != "workbench_restore"));
+    }
+
+    #[test]
+    fn workbench_mcp_hides_restore_but_routes_static_owner_and_continues() {
+        let fallback_owner = spawn_test_server();
+        let unavailable_listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let unavailable_endpoint = unavailable_listener.local_addr().unwrap().to_string();
+        drop(unavailable_listener);
+
+        let control: Arc<dyn ControlStore> = Arc::new(InMemoryControlStore::new());
+        register_test_fleet_shard(control.as_ref(), "/", 0, &fallback_owner.to_string());
+        register_test_fleet_shard(
+            control.as_ref(),
+            "/workbenches/blocked",
+            1,
+            &unavailable_endpoint,
+        );
+
+        let object_dir = tempdir().unwrap();
+        let object_store = LocalObjectStore::new(LocalObjectStoreOptions::new(
+            object_dir.path().join("objects"),
+        ))
+        .unwrap();
+        let client =
+            NoKvFsClient::connect_fleet(control, MountId::new(1).unwrap(), object_store).unwrap();
+        let source = "hidden-restore-source";
+        let responses = run_workbench_mcp_requests_on_client(
+            client,
+            workbench_mcp_options(),
+            vec![
+                serde_json::json!({
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "method": "tools/list"
+                }),
+                workbench_tool_call(2, "workbench_create", serde_json::json!({"id": source})),
+                workbench_tool_call(
+                    3,
+                    "workbench_put_file",
+                    serde_json::json!({
+                        "id": source,
+                        "section": "outputs",
+                        "path": "result.txt",
+                        "text": "done\n",
+                    }),
+                ),
+                workbench_tool_call(
+                    4,
+                    "workbench_commit",
+                    serde_json::json!({
+                        "id": source,
+                        "manifest": {"task": source},
+                        "content_digest_uri": "sha256:2000000000000000000000000000000000000000000000000000000000000001",
+                    }),
+                ),
+                workbench_tool_call(
+                    5,
+                    "workbench_snapshot",
+                    serde_json::json!({"id": source, "name": "checkpoint"}),
+                ),
+                workbench_tool_call(
+                    6,
+                    "workbench_restore",
+                    serde_json::json!({
+                        "id": source,
+                        "at_snapshot": "checkpoint",
+                        "destination_id": "blocked",
+                    }),
+                ),
+                serde_json::json!({
+                    "jsonrpc": "2.0",
+                    "id": 7,
+                    "method": "tools/list"
+                }),
+            ],
+        );
+
+        for (index, response) in responses.iter().enumerate().skip(1).take(4) {
+            assert_ne!(
+                response["result"]["isError"], true,
+                "setup response {index}: {response}"
+            );
+        }
+        for &response_index in &[0, 6] {
+            let tools = responses[response_index]["result"]["tools"]
+                .as_array()
+                .unwrap();
+            assert_eq!(tools.len(), 17);
+            assert!(tools.iter().all(|tool| tool["name"] != "workbench_restore"));
+        }
+
+        let restore = &responses[5];
+        assert_eq!(restore["id"], 6);
+        assert_eq!(restore["result"]["isError"], true);
+        assert_eq!(
+            restore["result"]["structuredContent"]["code"],
+            "NoKvClientError"
+        );
+        assert_eq!(responses[6]["id"], 7);
     }
 
     #[test]
@@ -7110,13 +7778,25 @@ mod tests {
     fn mcp_tools_call_unknown_tool_returns_error_without_crashing() {
         let store = MemoryObjectStore::new();
         let client = NoKvFsClient::connect(spawn_test_server(), store);
-        let reqs = r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"nonexistent","arguments":{}}}"#.to_owned() + "\n";
+        let reqs = r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"nonexistent","arguments":{}}}"#.to_owned()
+            + "\n"
+            + r#"{"jsonrpc":"2.0","id":2,"method":"tools/list"}"#
+            + "\n";
         let reader = std::io::Cursor::new(reqs);
         let mut writer = Vec::new();
         run_mcp_stream(client, reader, &mut writer).unwrap();
         let output = String::from_utf8(writer).unwrap();
-        let resp: serde_json::Value = serde_json::from_str(output.lines().next().unwrap()).unwrap();
-        assert_eq!(resp["result"]["isError"], true);
+        let responses = output
+            .lines()
+            .map(|line| serde_json::from_str::<serde_json::Value>(line).unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(responses[0]["result"]["isError"], true);
+        assert_eq!(
+            responses[0]["result"]["structuredContent"]["code"],
+            "UnknownMcpTool"
+        );
+        assert_eq!(responses[1]["id"], 2);
+        assert!(responses[1]["result"]["tools"].is_array());
     }
 
     #[test]
