@@ -2334,6 +2334,42 @@ mod tests {
         }
     }
 
+    struct SequencedAdvertisementMcpProvider {
+        advertisements: Mutex<std::collections::VecDeque<Vec<&'static str>>>,
+        probe_count: Arc<Mutex<usize>>,
+    }
+
+    impl mcp_runtime::McpToolProvider<MemoryObjectStore> for SequencedAdvertisementMcpProvider {
+        fn name(&self) -> &'static str {
+            "sequenced"
+        }
+
+        fn complete_tool_definitions(&self) -> Vec<nokv_agent::AgentToolDefinition> {
+            vec![fake_tool("alpha"), fake_tool("beta")]
+        }
+
+        fn advertised_tool_names(
+            &self,
+            _client: &NoKvFsClient<MemoryObjectStore>,
+        ) -> Vec<&'static str> {
+            *self.probe_count.lock().unwrap() += 1;
+            self.advertisements
+                .lock()
+                .unwrap()
+                .pop_front()
+                .expect("one advertisement must be configured per tools/list request")
+        }
+
+        fn execute_tool(
+            &self,
+            _client: &NoKvFsClient<MemoryObjectStore>,
+            _name: &str,
+            _args: &serde_json::Value,
+        ) -> Result<serde_json::Value, serde_json::Value> {
+            Ok(serde_json::json!({"provider": "sequenced"}))
+        }
+    }
+
     fn fake_tool(name: &'static str) -> nokv_agent::AgentToolDefinition {
         nokv_agent::AgentToolDefinition {
             name,
@@ -3515,6 +3551,54 @@ mod tests {
     }
 
     #[test]
+    fn mcp_runtime_stream_reprobes_dynamic_advertisement_for_each_tools_list() {
+        let probe_count = Arc::new(Mutex::new(0_usize));
+        let runtime = mcp_runtime::McpRuntime::<MemoryObjectStore>::new(vec![Box::new(
+            SequencedAdvertisementMcpProvider {
+                advertisements: Mutex::new(std::collections::VecDeque::from([
+                    vec!["alpha"],
+                    vec!["beta"],
+                ])),
+                probe_count: probe_count.clone(),
+            },
+        )])
+        .unwrap();
+        let requests = std::io::Cursor::new(
+            [
+                r#"{"jsonrpc":"2.0","id":1,"method":"tools/list"}"#,
+                r#"{"jsonrpc":"2.0","id":2,"method":"tools/list"}"#,
+            ]
+            .join("\n")
+                + "\n",
+        );
+        let mut writer = Vec::new();
+
+        run_mcp_stream_with_runtime(inert_mcp_client(), runtime, requests, &mut writer).unwrap();
+
+        let responses = String::from_utf8(writer)
+            .unwrap()
+            .lines()
+            .map(|line| serde_json::from_str::<serde_json::Value>(line).unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(*probe_count.lock().unwrap(), 2);
+        assert_eq!(responses.len(), 2);
+        assert_eq!(responses[0]["id"], 1);
+        assert_eq!(responses[1]["id"], 2);
+        let advertised_names = responses
+            .iter()
+            .map(|response| {
+                response["result"]["tools"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .map(|tool| tool["name"].as_str().unwrap())
+                    .collect::<Vec<_>>()
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(advertised_names, vec![vec!["alpha"], vec!["beta"]]);
+    }
+
+    #[test]
     fn mcp_command_opens_one_client_and_reuses_it_for_all_providers() {
         let opened = Arc::new(Mutex::new(0_usize));
         let observed_client_addresses = Arc::new(Mutex::new(Vec::new()));
@@ -3708,6 +3792,67 @@ mod tests {
                 provider: "first",
                 owner: "no provider",
             }
+        );
+    }
+
+    #[test]
+    fn mcp_runtime_rejects_duplicate_dynamic_advertisement_deterministically() {
+        let observed_client_addresses = Arc::new(Mutex::new(Vec::new()));
+        let advertised = Arc::new(Mutex::new(vec!["owned", "owned"]));
+        let runtime =
+            mcp_runtime::McpRuntime::<MemoryObjectStore>::new(vec![Box::new(fake_mcp_provider(
+                "first",
+                vec![fake_tool("owned")],
+                advertised,
+                observed_client_addresses,
+            ))])
+            .unwrap();
+
+        let err = runtime.tool_definitions(&inert_mcp_client()).unwrap_err();
+        assert_eq!(
+            err,
+            mcp_runtime::McpRuntimeError::DuplicateAdvertisement {
+                tool: "owned",
+                provider: "first",
+            }
+        );
+        assert_eq!(
+            err.to_string(),
+            "MCP provider first advertised owned more than once"
+        );
+    }
+
+    #[test]
+    fn mcp_runtime_rejects_cross_owner_advertisement_deterministically() {
+        let observed_client_addresses = Arc::new(Mutex::new(Vec::new()));
+        let runtime = mcp_runtime::McpRuntime::<MemoryObjectStore>::new(vec![
+            Box::new(fake_mcp_provider(
+                "first",
+                vec![fake_tool("alpha")],
+                Arc::new(Mutex::new(vec!["beta"])),
+                observed_client_addresses.clone(),
+            )),
+            Box::new(fake_mcp_provider(
+                "second",
+                vec![fake_tool("beta")],
+                Arc::new(Mutex::new(Vec::new())),
+                observed_client_addresses,
+            )),
+        ])
+        .unwrap();
+
+        let err = runtime.tool_definitions(&inert_mcp_client()).unwrap_err();
+        assert_eq!(
+            err,
+            mcp_runtime::McpRuntimeError::InvalidAdvertisement {
+                tool: "beta",
+                provider: "first",
+                owner: "second",
+            }
+        );
+        assert_eq!(
+            err.to_string(),
+            "MCP provider first advertised beta, but static ownership belongs to second"
         );
     }
 
@@ -7586,8 +7731,13 @@ mod tests {
             .collect::<Vec<_>>();
         assert_eq!(responses[0]["result"]["isError"], true);
         assert_eq!(
-            responses[0]["result"]["structuredContent"]["code"],
-            "UnknownMcpTool"
+            responses[0]["result"]["structuredContent"],
+            serde_json::json!({
+                "code": "UnknownMcpTool",
+                "message": "unknown MCP tool nonexistent",
+                "retryable": false,
+                "details": {},
+            })
         );
         assert_eq!(responses[1]["id"], 2);
         assert!(responses[1]["result"]["tools"].is_array());
