@@ -201,6 +201,14 @@ where
             .provider
             .execute_tool(client, name, args)
     }
+
+    #[cfg(test)]
+    pub fn provider_names(&self) -> Vec<&'static str> {
+        self.providers
+            .iter()
+            .map(|entry| entry.provider.name())
+            .collect()
+    }
 }
 
 pub struct AgentMcpProvider;

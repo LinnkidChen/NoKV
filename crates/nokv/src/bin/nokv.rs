@@ -193,6 +193,15 @@ struct McpCliOptions {
 enum McpProfile {
     Agent,
     Workbench,
+    /// Experimental composition entry point for LingTai integration tests.
+    /// Keep it out of public help and supported deployment examples.
+    Lingtai,
+}
+
+impl McpProfile {
+    fn uses_workbench_composition(self) -> bool {
+        matches!(self, Self::Workbench | Self::Lingtai)
+    }
 }
 
 #[derive(Debug)]
@@ -1192,6 +1201,7 @@ fn parse_archive_prefix(raw: &str, option: &str) -> Result<String, CliError> {
 
 fn parse_mcp_args(args: &[String]) -> Result<McpCliOptions, CliError> {
     let mut options = McpCliOptions::default();
+    let mut saw_workbench_max_bytes = false;
     let mut index = 1;
     while index < args.len() {
         match args[index].as_str() {
@@ -1214,6 +1224,7 @@ fn parse_mcp_args(args: &[String]) -> Result<McpCliOptions, CliError> {
             }
             "--workbench-max-bytes" => {
                 index += 1;
+                saw_workbench_max_bytes = true;
                 options.workbench_max_bytes = parse_usize(
                     value(args, index, "--workbench-max-bytes")?,
                     "workbench-max-bytes",
@@ -1223,12 +1234,11 @@ fn parse_mcp_args(args: &[String]) -> Result<McpCliOptions, CliError> {
         }
         index += 1;
     }
-    if options.profile == McpProfile::Workbench && options.workbench_root.is_none() {
+    if options.profile.uses_workbench_composition() && options.workbench_root.is_none() {
         return Err(CliError::MissingArgument("workbench root"));
     }
     if options.profile == McpProfile::Agent
-        && (options.workbench_root.is_some()
-            || options.workbench_max_bytes != workbench_mcp::DEFAULT_WORKBENCH_MAX_BYTES)
+        && (options.workbench_root.is_some() || saw_workbench_max_bytes)
     {
         return Err(CliError::InvalidOption {
             field: "mcp profile",
@@ -1242,6 +1252,7 @@ fn parse_mcp_profile(raw: &str) -> Result<McpProfile, CliError> {
     match raw {
         "agent" => Ok(McpProfile::Agent),
         "workbench" => Ok(McpProfile::Workbench),
+        "lingtai" => Ok(McpProfile::Lingtai),
         _ => Err(CliError::InvalidOption {
             field: "profile",
             value: raw.to_owned(),
@@ -1877,7 +1888,9 @@ where
 {
     let providers: Vec<Box<dyn mcp_runtime::McpToolProvider<O>>> = match options.profile {
         McpProfile::Agent => vec![Box::new(mcp_runtime::AgentMcpProvider)],
-        McpProfile::Workbench => workbench_provider_composition(options, uid, gid)?,
+        McpProfile::Workbench | McpProfile::Lingtai => {
+            workbench_provider_composition(options, uid, gid)?
+        }
     };
     mcp_runtime_from_providers(providers)
 }
@@ -3311,12 +3324,200 @@ mod tests {
         ));
     }
 
+    #[test]
+    fn lingtai_profile_is_hidden_and_validates_like_workbench() {
+        let command = parse(vec![
+            s("mcp"),
+            s("--profile"),
+            s("lingtai"),
+            s("--workbench-root"),
+            s("/workbenches/"),
+            s("--workbench-max-bytes"),
+            s("1024"),
+        ])
+        .unwrap()
+        .1;
+        assert_eq!(
+            command,
+            Command::Mcp(McpCliOptions {
+                profile: McpProfile::Lingtai,
+                workbench_root: Some(s("/workbenches")),
+                workbench_max_bytes: 1024,
+            })
+        );
+        assert!(matches!(
+            parse(vec![s("mcp"), s("--profile"), s("lingtai")]),
+            Err(CliError::MissingArgument("workbench root"))
+        ));
+        assert!(matches!(
+            parse(vec![
+                s("mcp"),
+                s("--profile"),
+                s("lingtai"),
+                s("--workbench-root"),
+                s("/")
+            ]),
+            Err(CliError::InvalidOption {
+                field: "workbench-root",
+                ..
+            })
+        ));
+        assert_eq!(
+            parse(vec![s("mcp"), s("--workbench-root"), s("/workbenches")])
+                .unwrap_err()
+                .to_string(),
+            "invalid mcp profile option workbench options require --profile workbench"
+        );
+        assert_eq!(
+            parse(vec![
+                s("mcp"),
+                s("--workbench-max-bytes"),
+                workbench_mcp::DEFAULT_WORKBENCH_MAX_BYTES.to_string(),
+            ])
+            .unwrap_err()
+            .to_string(),
+            "invalid mcp profile option workbench options require --profile workbench"
+        );
+
+        let mut help = Vec::new();
+        print_help(&mut help).unwrap();
+        let help = String::from_utf8(help).unwrap();
+        assert!(help.contains("mcp [--profile agent|workbench]"));
+        assert!(!help.to_ascii_lowercase().contains("lingtai"));
+    }
+
+    #[test]
+    fn lingtai_profile_runtime_rejects_missing_root_without_serving() {
+        let err = match mcp_runtime_for_options::<MemoryObjectStore>(
+            &McpCliOptions {
+                profile: McpProfile::Lingtai,
+                workbench_root: None,
+                workbench_max_bytes: workbench_mcp::DEFAULT_WORKBENCH_MAX_BYTES,
+            },
+            DEFAULT_UID,
+            DEFAULT_GID,
+        ) {
+            Ok(_) => panic!("a LingTai profile without a root must not construct a runtime"),
+            Err(err) => err,
+        };
+        assert_eq!(err.kind(), std::io::ErrorKind::InvalidInput);
+        assert_eq!(err.to_string(), "workbench MCP profile requires a root");
+    }
+
     fn workbench_mcp_options() -> McpCliOptions {
         McpCliOptions {
             profile: McpProfile::Workbench,
             workbench_root: Some(s("/workbenches")),
             workbench_max_bytes: workbench_mcp::DEFAULT_WORKBENCH_MAX_BYTES,
         }
+    }
+
+    fn lingtai_mcp_options() -> McpCliOptions {
+        McpCliOptions {
+            profile: McpProfile::Lingtai,
+            workbench_root: Some(s("/workbenches")),
+            workbench_max_bytes: workbench_mcp::DEFAULT_WORKBENCH_MAX_BYTES,
+        }
+    }
+
+    #[test]
+    fn lingtai_profile_parity_covers_the_shared_workbench_surface() {
+        let session = SharedWorkbenchMcpSession::acquire();
+        let workbench_runtime = mcp_runtime_for_options::<LocalObjectStore>(
+            &workbench_mcp_options(),
+            DEFAULT_UID,
+            DEFAULT_GID,
+        )
+        .unwrap();
+        let lingtai_runtime = mcp_runtime_for_options::<LocalObjectStore>(
+            &lingtai_mcp_options(),
+            DEFAULT_UID,
+            DEFAULT_GID,
+        )
+        .unwrap();
+        let client = session.direct_client();
+
+        assert_eq!(workbench_runtime.provider_names(), vec!["workbench"]);
+        assert_eq!(lingtai_runtime.provider_names(), vec!["workbench"]);
+        assert_eq!(
+            workbench_runtime.tool_definitions(&client).unwrap(),
+            lingtai_runtime.tool_definitions(&client).unwrap(),
+            "the temporary alias must preserve names, descriptions, schemas, and order"
+        );
+
+        let success_args = serde_json::json!({});
+        assert_eq!(
+            workbench_runtime
+                .execute_tool(&client, "workbench_find", &success_args)
+                .unwrap(),
+            lingtai_runtime
+                .execute_tool(&client, "workbench_find", &success_args)
+                .unwrap()
+        );
+
+        let invalid_read_args = serde_json::json!({
+            "id": "profile-parity",
+            "section": "not-a-section",
+            "path": "result.txt",
+        });
+        let workbench_error = workbench_runtime
+            .execute_tool(&client, "workbench_read", &invalid_read_args)
+            .expect_err("invalid workbench read must retain its structured error");
+        let lingtai_error = lingtai_runtime
+            .execute_tool(&client, "workbench_read", &invalid_read_args)
+            .expect_err("invalid workbench read must retain its structured error");
+        assert_eq!(workbench_error, lingtai_error);
+        assert_eq!(workbench_error["status"], "error");
+
+        // Once SharedWorkspaceProvider is added only to the LingTai profile,
+        // narrow this assertion to the common Workbench subset and keep the
+        // shared-runtime invariants above; do not preserve whole-profile
+        // equality forever.
+    }
+
+    #[test]
+    fn lingtai_profile_parity_preserves_dynamic_restore_advertisement() {
+        let fallback_owner = spawn_test_server();
+        let control: Arc<dyn ControlStore> = Arc::new(InMemoryControlStore::new());
+        register_test_fleet_shard(control.as_ref(), "/", 0, &fallback_owner.to_string());
+        control
+            .register_shard(
+                ShardId::new("mount-1:/workbenches/special/deep"),
+                "/workbenches/special/deep".to_owned(),
+                1,
+            )
+            .unwrap();
+
+        let object_dir = tempdir().unwrap();
+        let client = NoKvFsClient::connect_fleet(
+            control,
+            MountId::new(1).unwrap(),
+            LocalObjectStore::new(LocalObjectStoreOptions::new(
+                object_dir.path().join("objects"),
+            ))
+            .unwrap(),
+        )
+        .unwrap();
+        let workbench_runtime = mcp_runtime_for_options::<LocalObjectStore>(
+            &workbench_mcp_options(),
+            DEFAULT_UID,
+            DEFAULT_GID,
+        )
+        .unwrap();
+        let lingtai_runtime = mcp_runtime_for_options::<LocalObjectStore>(
+            &lingtai_mcp_options(),
+            DEFAULT_UID,
+            DEFAULT_GID,
+        )
+        .unwrap();
+
+        let workbench_tools = workbench_runtime.tool_definitions(&client).unwrap();
+        let lingtai_tools = lingtai_runtime.tool_definitions(&client).unwrap();
+        assert_eq!(workbench_tools, lingtai_tools);
+        assert_eq!(workbench_tools.len(), 17);
+        assert!(workbench_tools
+            .iter()
+            .all(|tool| tool.name != "workbench_restore"));
     }
 
     fn run_workbench_mcp_requests(requests: Vec<serde_json::Value>) -> Vec<serde_json::Value> {
