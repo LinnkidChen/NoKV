@@ -6,6 +6,7 @@ use nokv_client::NoKvFsClient;
 use nokv_object::ObjectStore;
 use serde_json::{json, Value};
 
+use crate::mcp_input_schema::CompiledInputSchema;
 use crate::workbench_mcp;
 
 /// A binary-internal MCP tool provider. Providers describe their complete,
@@ -16,6 +17,13 @@ where
     O: ObjectStore + Send + Sync + 'static,
 {
     fn name(&self) -> &'static str;
+
+    /// Opt into runtime enforcement of the provider's advertised input
+    /// schemas. Providers remain opt-out until their existing argument
+    /// compatibility has been audited.
+    fn enforce_input_schemas(&self) -> bool {
+        false
+    }
 
     fn complete_tool_definitions(&self) -> Vec<AgentToolDefinition>;
 
@@ -38,6 +46,7 @@ where
 {
     provider: Box<dyn McpToolProvider<O>>,
     complete_catalog: Vec<AgentToolDefinition>,
+    input_schemas: HashMap<&'static str, CompiledInputSchema>,
 }
 
 /// Ordered provider composition and its static ownership routing table.
@@ -65,6 +74,13 @@ pub enum McpRuntimeError {
         provider: &'static str,
         owner: &'static str,
     },
+    InvalidInputSchema {
+        tool: &'static str,
+        provider: &'static str,
+        keyword: String,
+        schema_path: String,
+        message: String,
+    },
 }
 
 impl fmt::Display for McpRuntimeError {
@@ -91,6 +107,16 @@ impl fmt::Display for McpRuntimeError {
             } => write!(
                 f,
                 "MCP provider {provider} advertised {tool}, but static ownership belongs to {owner}"
+            ),
+            Self::InvalidInputSchema {
+                tool,
+                provider,
+                keyword,
+                schema_path,
+                message,
+            } => write!(
+                f,
+                "MCP provider {provider} has an invalid input schema for {tool} at {schema_path} ({keyword}): {message}"
             ),
         }
     }
@@ -131,7 +157,30 @@ where
             entries.push(ProviderEntry {
                 provider,
                 complete_catalog,
+                input_schemas: HashMap::new(),
             });
+        }
+
+        // Ownership errors retain their historical priority. Only after the
+        // complete static routing table is valid do opted-in providers compile
+        // their immutable schema cache.
+        for entry in &mut entries {
+            if !entry.provider.enforce_input_schemas() {
+                continue;
+            }
+            for definition in &entry.complete_catalog {
+                let compiled =
+                    CompiledInputSchema::compile(&definition.parameters).map_err(|err| {
+                        McpRuntimeError::InvalidInputSchema {
+                            tool: definition.name,
+                            provider: entry.provider.name(),
+                            keyword: err.keyword,
+                            schema_path: err.schema_path,
+                            message: err.message,
+                        }
+                    })?;
+                entry.input_schemas.insert(definition.name, compiled);
+            }
         }
 
         Ok(Self {
@@ -197,9 +246,26 @@ where
                 "details": {},
             }));
         };
-        self.providers[provider_index]
-            .provider
-            .execute_tool(client, name, args)
+        let entry = &self.providers[provider_index];
+        if let Some(schema) = entry.input_schemas.get(name) {
+            if let Err(violation) = schema.validate(args) {
+                return Err(json!({
+                    "status": "error",
+                    "code": "InvalidMcpToolArguments",
+                    "message": format!(
+                        "arguments for MCP tool {name} do not match its input schema"
+                    ),
+                    "retryable": false,
+                    "details": {
+                        "tool": name,
+                        "keyword": violation.keyword,
+                        "instance_path": violation.instance_path,
+                        "schema_path": violation.schema_path,
+                    },
+                }));
+            }
+        }
+        entry.provider.execute_tool(client, name, args)
     }
 
     #[cfg(test)]
@@ -208,6 +274,14 @@ where
             .iter()
             .map(|entry| entry.provider.name())
             .collect()
+    }
+
+    #[cfg(test)]
+    pub fn compiled_input_schema_count(&self) -> usize {
+        self.providers
+            .iter()
+            .map(|entry| entry.input_schemas.len())
+            .sum()
     }
 }
 
@@ -265,6 +339,10 @@ where
 {
     fn name(&self) -> &'static str {
         "workbench"
+    }
+
+    fn enforce_input_schemas(&self) -> bool {
+        true
     }
 
     fn complete_tool_definitions(&self) -> Vec<AgentToolDefinition> {

@@ -1,5 +1,7 @@
 //! Minimal NoKV command line interface.
 
+#[path = "nokv/mcp_input_schema.rs"]
+mod mcp_input_schema;
 #[path = "nokv/mcp_runtime.rs"]
 mod mcp_runtime;
 #[path = "nokv/workbench_mcp.rs"]
@@ -2383,11 +2385,228 @@ mod tests {
         }
     }
 
+    struct SchemaTestMcpProvider {
+        provider_name: &'static str,
+        definition: nokv_agent::AgentToolDefinition,
+        enforce_input_schemas: bool,
+        execute_count: Arc<Mutex<usize>>,
+    }
+
+    impl mcp_runtime::McpToolProvider<MemoryObjectStore> for SchemaTestMcpProvider {
+        fn name(&self) -> &'static str {
+            self.provider_name
+        }
+
+        fn enforce_input_schemas(&self) -> bool {
+            self.enforce_input_schemas
+        }
+
+        fn complete_tool_definitions(&self) -> Vec<nokv_agent::AgentToolDefinition> {
+            vec![self.definition.clone()]
+        }
+
+        fn advertised_tool_names(
+            &self,
+            _client: &NoKvFsClient<MemoryObjectStore>,
+        ) -> Vec<&'static str> {
+            vec![self.definition.name]
+        }
+
+        fn execute_tool(
+            &self,
+            _client: &NoKvFsClient<MemoryObjectStore>,
+            _name: &str,
+            args: &serde_json::Value,
+        ) -> Result<serde_json::Value, serde_json::Value> {
+            *self.execute_count.lock().unwrap() += 1;
+            Ok(serde_json::json!({
+                "provider": self.provider_name,
+                "arguments": args
+            }))
+        }
+    }
+
     fn fake_tool(name: &'static str) -> nokv_agent::AgentToolDefinition {
         nokv_agent::AgentToolDefinition {
             name,
             description: "fake MCP tool",
             parameters: serde_json::json!({"type": "object"}),
+        }
+    }
+
+    fn fake_tool_with_schema(
+        name: &'static str,
+        parameters: serde_json::Value,
+    ) -> nokv_agent::AgentToolDefinition {
+        nokv_agent::AgentToolDefinition {
+            name,
+            description: "fake schema-aware MCP tool",
+            parameters,
+        }
+    }
+
+    fn schema_test_mcp_provider(
+        provider_name: &'static str,
+        definition: nokv_agent::AgentToolDefinition,
+        enforce_input_schemas: bool,
+        execute_count: Arc<Mutex<usize>>,
+    ) -> SchemaTestMcpProvider {
+        SchemaTestMcpProvider {
+            provider_name,
+            definition,
+            enforce_input_schemas,
+            execute_count,
+        }
+    }
+
+    fn minimal_valid_schema_value(schema: &serde_json::Value) -> serde_json::Value {
+        if let Some(values) = schema.get("enum").and_then(serde_json::Value::as_array) {
+            return values
+                .first()
+                .expect("test schemas use non-empty enums")
+                .clone();
+        }
+        if let Some(branches) = schema.get("anyOf").and_then(serde_json::Value::as_array) {
+            return minimal_valid_schema_value(
+                branches
+                    .first()
+                    .expect("test schemas use non-empty anyOf arrays"),
+            );
+        }
+
+        let selected_type = match schema.get("type") {
+            Some(serde_json::Value::String(value)) => Some(value.as_str()),
+            Some(serde_json::Value::Array(values)) => values
+                .iter()
+                .filter_map(serde_json::Value::as_str)
+                .find(|value| *value != "null")
+                .or(Some("null")),
+            _ => None,
+        };
+
+        match selected_type {
+            Some("object") => {
+                let mut object = serde_json::Map::new();
+                let properties = schema
+                    .get("properties")
+                    .and_then(serde_json::Value::as_object);
+                let mut add_required = |required_schema: &serde_json::Value| {
+                    if let Some(required) = required_schema
+                        .get("required")
+                        .and_then(serde_json::Value::as_array)
+                    {
+                        for name in required.iter().filter_map(serde_json::Value::as_str) {
+                            let value = properties
+                                .and_then(|properties| properties.get(name))
+                                .map(minimal_valid_schema_value)
+                                .unwrap_or(serde_json::Value::Null);
+                            object.entry(name.to_owned()).or_insert(value);
+                        }
+                    }
+                };
+                add_required(schema);
+                if let Some(first_branch) = schema
+                    .get("oneOf")
+                    .and_then(serde_json::Value::as_array)
+                    .and_then(|branches| branches.first())
+                {
+                    add_required(first_branch);
+                }
+                serde_json::Value::Object(object)
+            }
+            Some("array") => serde_json::json!([]),
+            Some("string") => {
+                if let Some(witness) = mcp_input_schema::string_pattern_witness(schema) {
+                    serde_json::Value::String(witness)
+                } else {
+                    let length = schema
+                        .get("minLength")
+                        .and_then(serde_json::Value::as_u64)
+                        .unwrap_or(1) as usize;
+                    serde_json::Value::String("x".repeat(length))
+                }
+            }
+            Some("integer") | Some("number") => schema
+                .get("minimum")
+                .cloned()
+                .unwrap_or_else(|| serde_json::json!(0)),
+            Some("boolean") => serde_json::Value::Bool(false),
+            Some("null") => serde_json::Value::Null,
+            Some(other) => panic!("unexpected test schema type {other}"),
+            None if schema.get("required").is_some() || schema.get("oneOf").is_some() => {
+                let mut object_schema = schema.clone();
+                object_schema
+                    .as_object_mut()
+                    .expect("test schema must be an object")
+                    .insert("type".to_owned(), serde_json::json!("object"));
+                minimal_valid_schema_value(&object_schema)
+            }
+            None => serde_json::Value::Null,
+        }
+    }
+
+    fn assert_required_schema_contracts(
+        schema: &serde_json::Value,
+        location: &str,
+        covered_schemas: &mut usize,
+        covered_fields: &mut usize,
+    ) {
+        if let Some(required) = schema.get("required").and_then(serde_json::Value::as_array) {
+            let compiled = mcp_input_schema::CompiledInputSchema::compile(schema)
+                .unwrap_or_else(|error| panic!("{location} must compile: {error:?}"));
+            let complete = minimal_valid_schema_value(schema);
+            compiled.validate(&complete).unwrap_or_else(|violation| {
+                panic!("{location} minimal value must validate: {complete}; {violation:?}")
+            });
+            for name in required.iter().filter_map(serde_json::Value::as_str) {
+                let mut missing = complete.clone();
+                missing
+                    .as_object_mut()
+                    .expect("required applies to an object test value")
+                    .remove(name);
+                let violation = compiled.validate(&missing).unwrap_err();
+                assert_eq!(
+                    violation.keyword, "required",
+                    "{location} must reject missing required field {name}: {violation:?}"
+                );
+                assert_eq!(violation.schema_path, "/required");
+                *covered_fields += 1;
+            }
+            *covered_schemas += 1;
+        }
+
+        if let Some(properties) = schema
+            .get("properties")
+            .and_then(serde_json::Value::as_object)
+        {
+            for (name, child) in properties {
+                assert_required_schema_contracts(
+                    child,
+                    &format!("{location}/properties/{name}"),
+                    covered_schemas,
+                    covered_fields,
+                );
+            }
+        }
+        if let Some(items) = schema.get("items") {
+            assert_required_schema_contracts(
+                items,
+                &format!("{location}/items"),
+                covered_schemas,
+                covered_fields,
+            );
+        }
+        for keyword in ["anyOf", "oneOf"] {
+            if let Some(branches) = schema.get(keyword).and_then(serde_json::Value::as_array) {
+                for (index, branch) in branches.iter().enumerate() {
+                    assert_required_schema_contracts(
+                        branch,
+                        &format!("{location}/{keyword}/{index}"),
+                        covered_schemas,
+                        covered_fields,
+                    );
+                }
+            }
         }
     }
 
@@ -3533,6 +3752,46 @@ mod tests {
         })
     }
 
+    fn assert_schema_error_value<'a>(
+        error: &'a serde_json::Value,
+        tool: &str,
+        keyword: &str,
+        instance_path: &str,
+        schema_path: &str,
+    ) -> &'a serde_json::Value {
+        assert_eq!(error["status"], "error", "error: {error}");
+        assert_eq!(error["code"], "InvalidMcpToolArguments", "error: {error}");
+        assert_eq!(error["retryable"], false, "error: {error}");
+        assert_eq!(
+            error["details"],
+            serde_json::json!({
+                "tool": tool,
+                "keyword": keyword,
+                "instance_path": instance_path,
+                "schema_path": schema_path,
+            }),
+            "error: {error}"
+        );
+        error
+    }
+
+    fn assert_mcp_schema_error<'a>(
+        response: &'a serde_json::Value,
+        tool: &str,
+        keyword: &str,
+        instance_path: &str,
+        schema_path: &str,
+    ) -> &'a serde_json::Value {
+        assert_eq!(response["result"]["isError"], true, "response: {response}");
+        assert_schema_error_value(
+            &response["result"]["structuredContent"],
+            tool,
+            keyword,
+            instance_path,
+            schema_path,
+        )
+    }
+
     fn run_workbench_mcp_requests_with_options(
         options: McpCliOptions,
         requests: Vec<serde_json::Value>,
@@ -3749,6 +4008,121 @@ mod tests {
         let observed = observed_client_addresses.lock().unwrap();
         assert_eq!(observed.len(), 5);
         assert!(observed.iter().all(|address| *address == expected));
+    }
+
+    #[test]
+    fn mcp_runtime_enforces_only_opted_in_schemas_before_dispatch() {
+        let closed_schema = serde_json::json!({
+            "type": "object",
+            "required": ["id"],
+            "properties": {
+                "id": {"type": "string"}
+            },
+            "additionalProperties": false
+        });
+        let validating_execute_count = Arc::new(Mutex::new(0_usize));
+        let validating_runtime = mcp_runtime::McpRuntime::<MemoryObjectStore>::new(vec![Box::new(
+            schema_test_mcp_provider(
+                "validating",
+                fake_tool_with_schema("validated", closed_schema.clone()),
+                true,
+                validating_execute_count.clone(),
+            ),
+        )])
+        .unwrap();
+        assert_eq!(validating_runtime.compiled_input_schema_count(), 1);
+
+        let invalid = validating_runtime
+            .execute_tool(
+                &inert_mcp_client(),
+                "validated",
+                &serde_json::json!({"id": "ok", "unknown": true}),
+            )
+            .unwrap_err();
+        assert_eq!(invalid["status"], "error");
+        assert_eq!(invalid["code"], "InvalidMcpToolArguments");
+        assert_eq!(invalid["retryable"], false);
+        assert_eq!(invalid["details"]["tool"], "validated");
+        assert_eq!(invalid["details"]["keyword"], "additionalProperties");
+        assert_eq!(invalid["details"]["instance_path"], "/unknown");
+        assert_eq!(invalid["details"]["schema_path"], "/additionalProperties");
+        assert_eq!(*validating_execute_count.lock().unwrap(), 0);
+
+        let valid = validating_runtime
+            .execute_tool(
+                &inert_mcp_client(),
+                "validated",
+                &serde_json::json!({"id": "ok"}),
+            )
+            .unwrap();
+        assert_eq!(valid["provider"], "validating");
+        assert_eq!(*validating_execute_count.lock().unwrap(), 1);
+        assert_eq!(validating_runtime.compiled_input_schema_count(), 1);
+
+        let compatible_execute_count = Arc::new(Mutex::new(0_usize));
+        let compatible_runtime = mcp_runtime::McpRuntime::<MemoryObjectStore>::new(vec![Box::new(
+            schema_test_mcp_provider(
+                "compatible",
+                fake_tool_with_schema("legacy", closed_schema),
+                false,
+                compatible_execute_count.clone(),
+            ),
+        )])
+        .unwrap();
+        assert_eq!(compatible_runtime.compiled_input_schema_count(), 0);
+        let compatible = compatible_runtime
+            .execute_tool(
+                &inert_mcp_client(),
+                "legacy",
+                &serde_json::json!({"id": "ok", "unknown": true}),
+            )
+            .unwrap();
+        assert_eq!(compatible["provider"], "compatible");
+        assert_eq!(*compatible_execute_count.lock().unwrap(), 1);
+    }
+
+    #[test]
+    fn mcp_runtime_fails_closed_on_unsupported_opted_in_schema_keyword() {
+        let unsupported_definition = fake_tool_with_schema(
+            "unsupported",
+            serde_json::json!({
+                "type": "object",
+                "properties": {},
+                "unevaluatedProperties": false
+            }),
+        );
+        let error = match mcp_runtime::McpRuntime::<MemoryObjectStore>::new(vec![Box::new(
+            schema_test_mcp_provider(
+                "validating",
+                unsupported_definition.clone(),
+                true,
+                Arc::new(Mutex::new(0)),
+            ),
+        )]) {
+            Ok(_) => panic!("unsupported opted-in schema must fail at construction"),
+            Err(error) => error,
+        };
+        assert_eq!(
+            error,
+            mcp_runtime::McpRuntimeError::InvalidInputSchema {
+                tool: "unsupported",
+                provider: "validating",
+                keyword: "unevaluatedProperties".to_owned(),
+                schema_path: "/unevaluatedProperties".to_owned(),
+                message: "unsupported schema keyword unevaluatedProperties".to_owned(),
+            }
+        );
+
+        let compatible_runtime = mcp_runtime::McpRuntime::<MemoryObjectStore>::new(vec![Box::new(
+            schema_test_mcp_provider(
+                "compatible",
+                unsupported_definition,
+                false,
+                Arc::new(Mutex::new(0)),
+            ),
+        )])
+        .expect("opted-out provider retains its existing argument compatibility");
+        assert_eq!(compatible_runtime.compiled_input_schema_count(), 0);
     }
 
     #[test]
@@ -4347,6 +4721,311 @@ mod tests {
     }
 
     #[test]
+    fn workbench_mcp_rejects_unknown_create_argument_before_dispatch() {
+        let runtime = mcp_runtime_for_options::<MemoryObjectStore>(
+            &workbench_mcp_options(),
+            DEFAULT_UID,
+            DEFAULT_GID,
+        )
+        .unwrap();
+        let error = runtime
+            .execute_tool(
+                &inert_mcp_client(),
+                "workbench_create",
+                &serde_json::json!({
+                    "id": "schema-enforcement-red",
+                    "unknown": true
+                }),
+            )
+            .expect_err("closed input schema must reject an unknown field before dispatch");
+
+        assert_eq!(error["status"], "error");
+        assert_eq!(error["code"], "InvalidMcpToolArguments");
+        assert_eq!(error["retryable"], false);
+        assert_eq!(error["details"]["tool"], "workbench_create");
+        assert_eq!(error["details"]["keyword"], "additionalProperties");
+        assert_eq!(error["details"]["instance_path"], "/unknown");
+        assert_eq!(error["details"]["schema_path"], "/additionalProperties");
+    }
+
+    #[test]
+    fn workbench_mcp_all_closed_tool_schemas_reject_unknown_fields() {
+        let definitions = workbench_mcp::complete_tool_definitions();
+        assert!(!definitions.is_empty());
+        let runtime = mcp_runtime_for_options::<MemoryObjectStore>(
+            &workbench_mcp_options(),
+            DEFAULT_UID,
+            DEFAULT_GID,
+        )
+        .unwrap();
+        assert_eq!(runtime.compiled_input_schema_count(), definitions.len());
+
+        for definition in definitions {
+            let error = runtime
+                .execute_tool(
+                    &inert_mcp_client(),
+                    definition.name,
+                    &serde_json::json!({"__unknown": true}),
+                )
+                .unwrap_err();
+            assert_eq!(
+                error["code"], "InvalidMcpToolArguments",
+                "{} must be rejected by its catalog schema: {error}",
+                definition.name
+            );
+            assert_eq!(error["details"]["tool"], definition.name);
+            assert_eq!(error["details"]["keyword"], "additionalProperties");
+            assert_eq!(error["details"]["instance_path"], "/__unknown");
+            assert_eq!(error["details"]["schema_path"], "/additionalProperties");
+        }
+    }
+
+    #[test]
+    fn workbench_mcp_catalog_drives_required_and_open_object_contracts() {
+        let definitions = workbench_mcp::complete_tool_definitions();
+        let mut covered_schemas = 0_usize;
+        let mut covered_fields = 0_usize;
+        for definition in &definitions {
+            assert_required_schema_contracts(
+                &definition.parameters,
+                definition.name,
+                &mut covered_schemas,
+                &mut covered_fields,
+            );
+        }
+        assert!(covered_schemas > 0);
+        assert!(covered_fields >= covered_schemas);
+
+        let commit = definitions
+            .iter()
+            .find(|definition| definition.name == "workbench_commit")
+            .unwrap();
+        let commit_schema =
+            mcp_input_schema::CompiledInputSchema::compile(&commit.parameters).unwrap();
+        commit_schema
+            .validate(&serde_json::json!({
+                "id": "open-manifest",
+                "manifest": {
+                    "caller_defined": {
+                        "nested": [1, true, null]
+                    }
+                },
+                "content_digest_uri": format!("sha256:{}", "a".repeat(64))
+            }))
+            .expect("caller-defined manifest object must remain open");
+
+        let snapshot = definitions
+            .iter()
+            .find(|definition| definition.name == "workbench_snapshot")
+            .unwrap();
+        let snapshot_schema =
+            mcp_input_schema::CompiledInputSchema::compile(&snapshot.parameters).unwrap();
+        snapshot_schema
+            .validate(&serde_json::json!({
+                "id": "open-metadata",
+                "metadata": {
+                    "caller_defined": {
+                        "nested": [1, true, null]
+                    }
+                }
+            }))
+            .expect("caller-defined snapshot metadata object must remain open");
+    }
+
+    #[test]
+    fn workbench_mcp_catalog_assertions_reject_before_provider_dispatch() {
+        let definitions = workbench_mcp::complete_tool_definitions();
+        let metadata = (0..65)
+            .map(|index| (format!("key-{index}"), serde_json::json!(index)))
+            .collect::<serde_json::Map<_, _>>();
+        let patterns = (0..17)
+            .map(|index| serde_json::json!(format!("pattern-{index}")))
+            .collect::<Vec<_>>();
+        let cases = vec![
+            (
+                "workbench_create",
+                serde_json::json!({"id": 7}),
+                "type",
+                "/id",
+                "/properties/id/type",
+            ),
+            (
+                "workbench_append",
+                serde_json::json!({"id": "x", "section": "invalid", "path": "p"}),
+                "enum",
+                "/section",
+                "/properties/section/enum",
+            ),
+            (
+                "workbench_read",
+                serde_json::json!({
+                    "id": "x", "section": "outputs", "path": "p", "limit": 0
+                }),
+                "minimum",
+                "/limit",
+                "/properties/limit/minimum",
+            ),
+            (
+                "workbench_read",
+                serde_json::json!({
+                    "id": "x", "section": "outputs", "path": "p", "limit": 301
+                }),
+                "maximum",
+                "/limit",
+                "/properties/limit/maximum",
+            ),
+            (
+                "workbench_snapshot",
+                serde_json::json!({"id": "x", "reason": ""}),
+                "minLength",
+                "/reason",
+                "/properties/reason/minLength",
+            ),
+            (
+                "workbench_snapshot",
+                serde_json::json!({"id": "x", "reason": "x".repeat(257)}),
+                "maxLength",
+                "/reason",
+                "/properties/reason/maxLength",
+            ),
+            (
+                "workbench_grep",
+                serde_json::json!({
+                    "id": "x", "pattern": "x", "patterns": patterns, "recursive": true
+                }),
+                "maxItems",
+                "/patterns",
+                "/properties/patterns/maxItems",
+            ),
+            (
+                "workbench_snapshot",
+                serde_json::json!({"id": "x", "metadata": metadata}),
+                "maxProperties",
+                "/metadata",
+                "/properties/metadata/maxProperties",
+            ),
+            (
+                "workbench_commit",
+                serde_json::json!({
+                    "id": "x", "manifest": {}, "content_digest_uri": "sha256:not-a-digest"
+                }),
+                "pattern",
+                "/content_digest_uri",
+                "/properties/content_digest_uri/pattern",
+            ),
+            (
+                "workbench_restore",
+                serde_json::json!({"id": "x", "at_snapshot": false, "destination_id": "d"}),
+                "anyOf",
+                "/at_snapshot",
+                "/properties/at_snapshot/anyOf",
+            ),
+            (
+                "workbench_snapshot_retire",
+                serde_json::json!({"id": "x", "snapshot_id": 1, "name": "n"}),
+                "oneOf",
+                "",
+                "/oneOf",
+            ),
+            (
+                "workbench_search",
+                serde_json::json!({"predicates": [{"field": "name"}]}),
+                "required",
+                "/predicates/0",
+                "/properties/predicates/items/required",
+            ),
+            (
+                "workbench_grep",
+                serde_json::json!({
+                    "id": "x", "pattern": "x", "patterns": [1], "recursive": true
+                }),
+                "type",
+                "/patterns/0",
+                "/properties/patterns/items/type",
+            ),
+            (
+                "workbench_create",
+                serde_json::json!({}),
+                "required",
+                "",
+                "/required",
+            ),
+            (
+                "workbench_create",
+                serde_json::json!({"id": "x", "__unknown": true}),
+                "additionalProperties",
+                "/__unknown",
+                "/additionalProperties",
+            ),
+        ];
+
+        for (tool, arguments, keyword, instance_path, schema_path) in cases {
+            let definition = definitions
+                .iter()
+                .find(|definition| definition.name == tool)
+                .unwrap_or_else(|| panic!("missing catalog definition for {tool}"))
+                .clone();
+            let execute_count = Arc::new(Mutex::new(0_usize));
+            let runtime = mcp_runtime::McpRuntime::<MemoryObjectStore>::new(vec![Box::new(
+                schema_test_mcp_provider("catalog-case", definition, true, execute_count.clone()),
+            )])
+            .unwrap();
+            let error = runtime
+                .execute_tool(&inert_mcp_client(), tool, &arguments)
+                .unwrap_err();
+            assert_schema_error_value(&error, tool, keyword, instance_path, schema_path);
+            assert_eq!(
+                *execute_count.lock().unwrap(),
+                0,
+                "{tool} must reject {keyword} before provider dispatch"
+            );
+        }
+    }
+
+    #[test]
+    fn agent_profile_remains_schema_compatibility_opt_out() {
+        let runtime = mcp_runtime_for_options::<MemoryObjectStore>(
+            &McpCliOptions::default(),
+            DEFAULT_UID,
+            DEFAULT_GID,
+        )
+        .unwrap();
+        assert_eq!(runtime.provider_names(), vec!["agent"]);
+        assert_eq!(runtime.compiled_input_schema_count(), 0);
+
+        let request = std::io::Cursor::new(
+            serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "tools/call",
+                "params": {
+                    "name": "ls",
+                    "arguments": {"path": "/", "__compat_unknown": true}
+                }
+            })
+            .to_string()
+                + "\n",
+        );
+        let mut writer = Vec::new();
+        run_mcp_stream_with_options(
+            inert_mcp_client(),
+            McpCliOptions::default(),
+            DEFAULT_UID,
+            DEFAULT_GID,
+            request,
+            &mut writer,
+        )
+        .unwrap();
+        let response: serde_json::Value =
+            serde_json::from_slice(writer.strip_suffix(b"\n").unwrap()).unwrap();
+        assert_eq!(response["result"]["isError"], true);
+        assert_eq!(
+            response["result"]["structuredContent"]["code"], "AgentToolError",
+            "the actual Agent handler must retain legacy extra-field behavior: {response}"
+        );
+    }
+
+    #[test]
     fn workbench_mcp_create_put_read_list_stat_grep_commit_snapshot_flow() {
         let responses = run_shared_workbench_mcp_requests(vec![
             serde_json::json!({
@@ -4797,7 +5476,13 @@ mod tests {
 
         let invalid = &responses[6]["result"]["structuredContent"];
         assert_eq!(responses[6]["result"]["isError"], true);
-        assert_eq!(invalid["code"], "InvalidContentDigestUri");
+        assert_mcp_schema_error(
+            &responses[6],
+            "workbench_commit",
+            "pattern",
+            "/content_digest_uri",
+            "/properties/content_digest_uri/pattern",
+        );
         assert_eq!(invalid["retryable"], false);
     }
 
@@ -5437,10 +6122,13 @@ mod tests {
         );
 
         assert_eq!(responses[7]["result"]["isError"], true);
-        assert!(responses[7]["result"]["content"][0]["text"]
-            .as_str()
-            .unwrap()
-            .contains("limit must be between 1 and 10"));
+        assert_mcp_schema_error(
+            &responses[7],
+            "workbench_search",
+            "maximum",
+            "/limit",
+            "/properties/limit/maximum",
+        );
         // section/path scoping only makes sense inside one workbench.
         assert_eq!(responses[8]["result"]["isError"], true);
     }
@@ -5932,10 +6620,13 @@ mod tests {
         assert_ne!(modified["generation"], generation);
 
         assert_eq!(conditional[3]["result"]["isError"], true);
-        assert!(conditional[3]["result"]["content"][0]["text"]
-            .as_str()
-            .unwrap()
-            .contains("limit must be between 1 and 300"));
+        assert_mcp_schema_error(
+            &conditional[3],
+            "workbench_read",
+            "maximum",
+            "/limit",
+            "/properties/limit/maximum",
+        );
     }
 
     /// Bytes-mode reads must return a base64 string, not a JSON integer
@@ -6107,10 +6798,13 @@ mod tests {
         );
 
         assert_eq!(responses[7]["result"]["isError"], true);
-        assert!(responses[7]["result"]["content"][0]["text"]
-            .as_str()
-            .unwrap()
-            .contains("limit must be between 1 and 300"));
+        assert_mcp_schema_error(
+            &responses[7],
+            "workbench_grep",
+            "maximum",
+            "/limit",
+            "/properties/limit/maximum",
+        );
     }
 
     #[test]
@@ -6689,11 +7383,13 @@ mod tests {
             serde_json::json!({"id": id, "ttl_days": 91}),
         ));
         let responses = run_shared_workbench_mcp_requests(requests);
-        assert_eq!(responses[3]["result"]["isError"], true);
-        assert!(responses[3]["result"]["content"][0]["text"]
-            .as_str()
-            .unwrap()
-            .contains("exceeds the maximum of 90 days"));
+        assert_mcp_schema_error(
+            &responses[3],
+            "workbench_snapshot",
+            "maximum",
+            "/ttl_days",
+            "/properties/ttl_days/maximum",
+        );
     }
 
     #[test]
@@ -7032,14 +7728,7 @@ mod tests {
             ),
         ]);
         for response in &responses {
-            assert_eq!(response["result"]["isError"], true, "response: {response}");
-            assert!(
-                response["result"]["content"][0]["text"]
-                    .as_str()
-                    .unwrap()
-                    .contains("provide exactly one of snapshot_id or name"),
-                "response: {response}"
-            );
+            assert_mcp_schema_error(response, "workbench_snapshot_retire", "oneOf", "", "/oneOf");
         }
     }
 
@@ -7557,7 +8246,7 @@ mod tests {
     }
 
     #[test]
-    fn workbench_mcp_at_snapshot_read_validates_cursor_and_limit_in_handler() {
+    fn workbench_mcp_at_snapshot_read_validates_cursor_and_limit() {
         let id = "ckpt-read-validation-013";
         let setup = run_shared_workbench_mcp_requests(vec![
             workbench_tool_call(1, "workbench_create", serde_json::json!({"id": id})),
@@ -7623,15 +8312,14 @@ mod tests {
                 }),
             ),
         ]);
-        let expected_messages = [
-            "invalid snapshot bytes cursor",
-            "invalid snapshot text cursor",
-            "limit must be between 1 and 300",
-            "limit must be between 1 and 300",
-            "exceeds total size",
-            "exceeds total line count",
+        let semantic_errors = [
+            (0, "invalid snapshot bytes cursor"),
+            (1, "invalid snapshot text cursor"),
+            (4, "exceeds total size"),
+            (5, "exceeds total line count"),
         ];
-        for (response, message) in responses.iter().zip(expected_messages) {
+        for (index, message) in semantic_errors {
+            let response = &responses[index];
             assert_eq!(response["result"]["isError"], true, "response: {response}");
             assert!(
                 response["result"]["structuredContent"]["message"]
@@ -7641,6 +8329,20 @@ mod tests {
                 "expected {message:?}: {response}"
             );
         }
+        assert_mcp_schema_error(
+            &responses[2],
+            "workbench_read",
+            "minimum",
+            "/limit",
+            "/properties/limit/minimum",
+        );
+        assert_mcp_schema_error(
+            &responses[3],
+            "workbench_read",
+            "maximum",
+            "/limit",
+            "/properties/limit/maximum",
+        );
     }
 
     #[test]
@@ -7942,6 +8644,68 @@ mod tests {
         );
         assert_eq!(responses[1]["id"], 2);
         assert!(responses[1]["result"]["tools"].is_array());
+    }
+
+    #[test]
+    fn mcp_schema_violation_is_a_structured_tool_error_and_stream_continues() {
+        let execute_count = Arc::new(Mutex::new(0_usize));
+        let runtime = mcp_runtime::McpRuntime::<MemoryObjectStore>::new(vec![Box::new(
+            schema_test_mcp_provider(
+                "validating",
+                fake_tool_with_schema(
+                    "validated",
+                    serde_json::json!({
+                        "type": "object",
+                        "properties": {},
+                        "additionalProperties": false
+                    }),
+                ),
+                true,
+                execute_count.clone(),
+            ),
+        )])
+        .unwrap();
+        let requests = std::io::Cursor::new(
+            [
+                r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"validated","arguments":{"unknown":true}}}"#,
+                r#"{"jsonrpc":"2.0","id":2,"method":"ping"}"#,
+            ]
+            .join("\n")
+                + "\n",
+        );
+        let mut writer = Vec::new();
+
+        run_mcp_stream_with_runtime(inert_mcp_client(), runtime, requests, &mut writer).unwrap();
+
+        let responses = String::from_utf8(writer)
+            .unwrap()
+            .lines()
+            .map(|line| serde_json::from_str::<serde_json::Value>(line).unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(responses.len(), 2);
+        assert!(responses[0].get("error").is_none());
+        assert_eq!(responses[0]["result"]["isError"], true);
+        let structured = &responses[0]["result"]["structuredContent"];
+        assert_eq!(structured["status"], "error");
+        assert_eq!(structured["code"], "InvalidMcpToolArguments");
+        assert_eq!(structured["retryable"], false);
+        assert_eq!(structured["details"]["tool"], "validated");
+        assert_eq!(structured["details"]["keyword"], "additionalProperties");
+        assert_eq!(structured["details"]["instance_path"], "/unknown");
+        assert_eq!(
+            structured["details"]["schema_path"],
+            "/additionalProperties"
+        );
+        let text: serde_json::Value = serde_json::from_str(
+            responses[0]["result"]["content"][0]["text"]
+                .as_str()
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(&text, structured);
+        assert_eq!(responses[1]["id"], 2);
+        assert_eq!(responses[1]["result"], serde_json::json!({}));
+        assert_eq!(*execute_count.lock().unwrap(), 0);
     }
 
     #[test]
@@ -8294,10 +9058,12 @@ mod tests {
             escape.contains("'.' or '..'"),
             "dot-dot escape error: {escape}"
         );
-        let fake_section = attack_tool_error(&attempts[1]);
-        assert!(
-            fake_section.contains("invalid section"),
-            "fake section error: {fake_section}"
+        assert_mcp_schema_error(
+            &attempts[1],
+            "workbench_append",
+            "enum",
+            "/section",
+            "/properties/section/enum",
         );
         // The out-of-band file must be untouched.
         assert_eq!(
@@ -8593,18 +9359,20 @@ mod tests {
                 "workbench_put_file",
                 serde_json::json!({"id": wb, "section": "outputs", "path": "f.txt", "text": "hello"}),
             ),
-            // The MCP layer does not validate JSON Schema; the tool code must
-            // reject a negative generation itself.
+            // The runtime enforces the advertised non-negative generation
+            // before the Workbench handler can perform any I/O.
             workbench_tool_call(
                 3,
                 "workbench_read",
                 serde_json::json!({"id": wb, "section": "outputs", "path": "f.txt", "if_none_match": -1}),
             ),
         ]);
-        let error = attack_tool_error(&responses[2]);
-        assert!(
-            error.contains("if_none_match must be an integer"),
-            "error: {error}"
+        assert_mcp_schema_error(
+            &responses[2],
+            "workbench_read",
+            "minimum",
+            "/if_none_match",
+            "/properties/if_none_match/minimum",
         );
     }
 
@@ -8785,10 +9553,12 @@ mod tests {
                 "predicates": [{"field": "name", "op": "regex", "value": ".*"}]
             }),
         )]);
-        let error = attack_tool_error(&responses[0]);
-        assert!(
-            error.contains("unsupported predicate operator regex"),
-            "error: {error}"
+        assert_mcp_schema_error(
+            &responses[0],
+            "workbench_search",
+            "enum",
+            "/predicates/0/op",
+            "/properties/predicates/items/properties/op/enum",
         );
     }
 
@@ -8800,10 +9570,12 @@ mod tests {
             "workbench_search",
             serde_json::json!({"id": wb, "limit": 0}),
         )]);
-        let error = attack_tool_error(&responses[0]);
-        assert!(
-            error.contains("limit must be between 1 and 10"),
-            "error: {error}"
+        assert_mcp_schema_error(
+            &responses[0],
+            "workbench_search",
+            "minimum",
+            "/limit",
+            "/properties/limit/minimum",
         );
     }
 
@@ -8916,10 +9688,12 @@ mod tests {
                 .any(|m| m["snippet"].as_str().unwrap_or("").contains("needle")),
             "16 patterns + pattern must still match: {ok}"
         );
-        let error = attack_tool_error(&responses[1]);
-        assert!(
-            error.contains("patterns must not exceed 16"),
-            "error: {error}"
+        assert_mcp_schema_error(
+            &responses[1],
+            "workbench_grep",
+            "maxItems",
+            "/patterns",
+            "/properties/patterns/maxItems",
         );
     }
 
